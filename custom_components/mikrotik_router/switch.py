@@ -90,7 +90,7 @@ class MikrotikSwitch(MikrotikEntity, SwitchEntity, RestoreEntity):
         await self.async_run_routeros(
             self.coordinator.set_value, path, param, value, mod_param, False
         )
-        await self.coordinator.async_refresh()
+        await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self) -> None:
         """Turn off the switch."""
@@ -103,7 +103,7 @@ class MikrotikSwitch(MikrotikEntity, SwitchEntity, RestoreEntity):
         await self.async_run_routeros(
             self.coordinator.set_value, path, param, value, mod_param, True
         )
-        await self.coordinator.async_refresh()
+        await self.coordinator.async_request_refresh()
 
 
 # ---------------------------
@@ -149,42 +149,15 @@ class MikrotikPortSwitch(MikrotikSwitch):
 
     async def async_turn_on(self) -> None:
         """Turn on the switch."""
-        self.require_access("write")
-
-        path = self.entity_description.data_switch_path
-        param = self.entity_description.data_reference
-        if self._data["about"] == "managed by CAPsMAN":
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="managed_by_capsman",
-                translation_placeholders={"entity": str(self._data[param])},
-            )
-        if "-" in self._data["port-mac-address"]:
-            param = "name"
-        value = self._data[self.entity_description.data_reference]
-        mod_param = self.entity_description.data_switch_parameter
-        await self.async_run_routeros(
-            self.coordinator.set_value, path, param, value, mod_param, False
-        )
-
-        if "poe-out" in self._data and self._data["poe-out"] == "off":
-            path = "/interface/ethernet"
-            await self.async_run_routeros(
-                self.coordinator.set_value,
-                path,
-                param,
-                value,
-                "poe-out",
-                "auto-on",
-            )
-
-        await self.coordinator.async_refresh()
+        await self._async_set_port(True)
 
     async def async_turn_off(self) -> None:
         """Turn off the switch."""
-        self.require_access("write")
+        await self._async_set_port(False)
 
-        path = self.entity_description.data_switch_path
+    async def _async_set_port(self, enabled: bool) -> None:
+        """Enable or disable the port and its PoE output in one job."""
+        self.require_access("write")
         param = self.entity_description.data_reference
         if self._data["about"] == "managed by CAPsMAN":
             raise ServiceValidationError(
@@ -192,21 +165,37 @@ class MikrotikPortSwitch(MikrotikSwitch):
                 translation_key="managed_by_capsman",
                 translation_placeholders={"entity": str(self._data[param])},
             )
+
         if "-" in self._data["port-mac-address"]:
             param = "name"
         value = self._data[self.entity_description.data_reference]
-        mod_param = self.entity_description.data_switch_parameter
-        await self.async_run_routeros(
-            self.coordinator.set_value, path, param, value, mod_param, True
-        )
+        poe_out = self._data.get("poe-out")
+        if enabled and poe_out == "off":
+            poe_out = "auto-on"
+        elif not enabled and poe_out == "auto-on":
+            poe_out = "off"
+        else:
+            poe_out = None
 
-        if "poe-out" in self._data and self._data["poe-out"] == "auto-on":
-            path = "/interface/ethernet"
-            await self.async_run_routeros(
-                self.coordinator.set_value, path, param, value, "poe-out", "off"
+        def set_port() -> bool:
+            # Both changes run under the coordinator's command lock, so two
+            # overlapping toggles can't interleave (L3).
+            if not self.coordinator.set_value(
+                self.entity_description.data_switch_path,
+                param,
+                value,
+                self.entity_description.data_switch_parameter,
+                not enabled,
+            ):
+                return False
+            if poe_out is None:
+                return True
+            return self.coordinator.set_value(
+                "/interface/ethernet", param, value, "poe-out", poe_out
             )
 
-        await self.coordinator.async_refresh()
+        await self.async_run_routeros(set_port)
+        await self.coordinator.async_request_refresh()
 
 
 # NAT, Mangle and Filter rules are keyed and switched by their RouterOS .id,
@@ -237,7 +226,7 @@ class MikrotikQueueSwitch(MikrotikSwitch):
         await self.async_run_routeros(
             self.coordinator.set_value, path, param, value, mod_param, False
         )
-        await self.coordinator.async_refresh()
+        await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self) -> None:
         """Turn off the switch."""
@@ -254,7 +243,7 @@ class MikrotikQueueSwitch(MikrotikSwitch):
         await self.async_run_routeros(
             self.coordinator.set_value, path, param, value, mod_param, True
         )
-        await self.coordinator.async_refresh()
+        await self.coordinator.async_request_refresh()
 
 
 # ---------------------------
@@ -274,7 +263,7 @@ class MikrotikKidcontrolPauseSwitch(MikrotikSwitch):
         await self.async_run_routeros(
             self.coordinator.execute, path, command, param, value
         )
-        await self.coordinator.async_refresh()
+        await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self) -> None:
         """Turn off the switch."""
@@ -287,4 +276,4 @@ class MikrotikKidcontrolPauseSwitch(MikrotikSwitch):
         await self.async_run_routeros(
             self.coordinator.execute, path, command, param, value
         )
-        await self.coordinator.async_refresh()
+        await self.coordinator.async_request_refresh()

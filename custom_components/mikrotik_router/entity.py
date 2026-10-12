@@ -191,9 +191,15 @@ class MikrotikEntity(CoordinatorEntity[_MikrotikCoordinatorT], Entity):
         self._attr_name = self.custom_name
 
     async def async_run_routeros(self, target: Callable[..., bool], *args) -> None:
-        """Run a synchronous RouterOS command outside the event loop."""
+        """Run a synchronous RouterOS command outside the event loop.
+
+        Commands for one router run one at a time, so a burst of service calls
+        waits here instead of filling the shared executor with jobs that only
+        block on the API lock (M10).
+        """
         try:
-            result = await self.hass.async_add_executor_job(target, *args)
+            async with self.coordinator.command_lock:
+                result = await self.hass.async_add_executor_job(target, *args)
         except ApiEntryNotFound as error:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,

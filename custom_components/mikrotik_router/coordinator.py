@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
 import re
@@ -108,6 +109,7 @@ class MikrotikTrackerCoordinator(DataUpdateCoordinator[None]):
         """Initialize MikrotikTrackerCoordinator."""
         self.hass = hass
         self.coordinator = coordinator
+        self.command_lock = coordinator.command_lock
 
         super().__init__(
             self.hass,
@@ -300,6 +302,8 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
 
         self.host_hass_recovered = False
         self.host_tracking_initialized = False
+        # Serialises entity commands (switches, buttons, services)
+        self.command_lock = asyncio.Lock()
 
         self.support_capsman = False
         self.support_wireless = False
