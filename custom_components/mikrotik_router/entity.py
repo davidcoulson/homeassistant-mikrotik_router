@@ -43,6 +43,22 @@ _LOGGER = getLogger(__name__)
 
 
 def _skip_sensor(config_entry, entity_description, data, uid) -> bool:
+    # Diagnostic readings exist only for SFP ports with a module and for
+    # wireless clients
+    if entity_description.func == "MikrotikDiagnosticSensor":
+        if data[uid].get(entity_description.data_attribute) in (None, "", "unknown"):
+            return True
+        if entity_description.data_path == "host":
+            return not config_entry.options.get(CONF_TRACK_HOSTS, DEFAULT_TRACK_HOSTS)
+        return data[uid].get("sfp-module-present") in (
+            None,
+            False,
+            "",
+            "unknown",
+            "false",
+            "no",
+        )
+
     # Sensors
     if (
         entity_description.func == "MikrotikInterfaceTrafficSensor"

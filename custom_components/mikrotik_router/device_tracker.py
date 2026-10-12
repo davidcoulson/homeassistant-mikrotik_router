@@ -101,6 +101,10 @@ class MikrotikDeviceTracker(ScannerEntity, MikrotikEntity):
 class MikrotikHostDeviceTracker(MikrotikDeviceTracker):
     """Representation of a network device."""
 
+    # last-seen moves on every poll; keep it in the state but out of the
+    # recorder, so each update does not store a new attributes row
+    _unrecorded_attributes = frozenset({"last_seen"})
+
     @property
     def option_track_network_hosts(self):
         """Config entry option to not track ARP."""
