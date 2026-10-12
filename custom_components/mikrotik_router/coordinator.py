@@ -113,6 +113,9 @@ ETHERNET_MONITOR_SFP_VALS = [
 ]
 
 
+SLOW_POLL_INTERVAL = 300
+FIRMWARE_CHECK_INTERVAL = 4 * 60 * 60
+
 HYSTERESIS_DELTA = 2
 HYSTERESIS_MAX_AGE = 300
 
@@ -383,6 +386,13 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         self._published = {}
         self._monitor_batch = True
         self.rebootcheck = 0
+        # Tiered polling: static config is read every SLOW_POLL_INTERVAL,
+        # or on the next poll after force_full_refresh is set.
+        self.force_full_refresh = True
+        self._slow_poll = True
+        self._last_slow_poll = None
+        self._last_firmware_check = None
+        self._dhcp_server_misses = set()
 
     # ---------------------------
     #   option_track_iface_clients
@@ -684,24 +694,30 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
     # ---------------------------
     async def _async_update_data(self):
         """Update Mikrotik data"""
+        now = monotonic()
+        self._slow_poll = (
+            self.force_full_refresh
+            or self._last_slow_poll is None
+            or now - self._last_slow_poll >= SLOW_POLL_INTERVAL
+        )
+        self.force_full_refresh = False
+        if self._slow_poll:
+            self._dhcp_server_misses.clear()
+
+        resource_read = False
         delta = datetime.now().replace(microsecond=0) - self.last_hwinfo_update
         if self.api.has_reconnected() or delta.total_seconds() > 60 * 60 * 4:
             await self.hass.async_add_executor_job(self.get_access)
 
             if self.api.connected():
-                await self.hass.async_add_executor_job(self.get_firmware_update)
-
-            if self.api.connected():
                 await self.hass.async_add_executor_job(self.get_system_resource)
+                resource_read = True
 
             if self.api.connected():
                 await self.hass.async_add_executor_job(self.get_capabilities)
 
             if self.api.connected():
                 await self.hass.async_add_executor_job(self.get_system_routerboard)
-
-            if self.api.connected() and self.option_sensor_scripts:
-                await self.hass.async_add_executor_job(self.get_script)
 
             if self.api.connected():
                 await self.hass.async_add_executor_job(self.get_dhcp_network)
@@ -715,16 +731,31 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             if self.api.connected():
                 self.last_hwinfo_update = datetime.now().replace(microsecond=0)
 
-        await self.hass.async_add_executor_job(self.get_system_resource)
+        if not resource_read:
+            await self.hass.async_add_executor_job(self.get_system_resource)
 
-        # if self.api.connected() and "available" not in self.ds["fw-update"]:
-        #     await self.hass.async_add_executor_job(self.get_firmware_update)
+        # The firmware check streams for 10 s with the API lock held, so it
+        # runs on its own cadence and never during the first refresh.
+        if (
+            self.api.connected()
+            and self.data is not None
+            and (
+                self._last_firmware_check is None
+                or now - self._last_firmware_check >= FIRMWARE_CHECK_INTERVAL
+            )
+        ):
+            await self.hass.async_add_executor_job(self.get_firmware_update)
+            self._last_firmware_check = now
 
         if self.api.connected():
             await self.hass.async_add_executor_job(self.get_system_health)
 
-        if self.api.connected():
+        if self.api.connected() and self.option_sensor_scripts:
+            await self.hass.async_add_executor_job(self.get_script)
+
+        if self.api.connected() and self._slow_poll:
             await self.hass.async_add_executor_job(self.get_dhcp_client)
+            await self.hass.async_add_executor_job(self.get_dhcp_server)
 
         if self.api.connected():
             await self.hass.async_add_executor_job(self.get_interface)
@@ -739,7 +770,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         if self.api.connected() and self.support_capsman:
             await self.hass.async_add_executor_job(self.get_capsman_hosts)
 
-        if self.api.connected() and self.support_wireless:
+        if self.api.connected() and self.support_wireless and self._slow_poll:
             await self.hass.async_add_executor_job(self.get_wireless)
 
         if self.api.connected() and self.support_wireless:
@@ -760,16 +791,16 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         if self.api.connected():
             await self.hass.async_add_executor_job(self.process_interface_client)
 
-        if self.api.connected() and self.option_sensor_nat:
+        if self.api.connected() and self.option_sensor_nat and self._slow_poll:
             await self.hass.async_add_executor_job(self.get_nat)
 
         if self.api.connected() and self.option_sensor_kidcontrol:
             await self.hass.async_add_executor_job(self.get_kidcontrol)
 
-        if self.api.connected() and self.option_sensor_mangle:
+        if self.api.connected() and self.option_sensor_mangle and self._slow_poll:
             await self.hass.async_add_executor_job(self.get_mangle)
 
-        if self.api.connected() and self.option_sensor_filter:
+        if self.api.connected() and self.option_sensor_filter and self._slow_poll:
             await self.hass.async_add_executor_job(self.get_filter)
 
         if self.api.connected() and self.option_sensor_netwatch:
@@ -804,10 +835,22 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             await self.hass.async_add_executor_job(self.get_gps)
 
         if not self.api.connected():
+            self.force_full_refresh = True
             self._raise_connection_error()
+
+        if self._slow_poll:
+            self._last_slow_poll = now
 
         # async_dispatcher_send(self.hass, "update_sensors", self)
         return self.ds
+
+    # ---------------------------
+    #   async_request_full_refresh
+    # ---------------------------
+    async def async_request_full_refresh(self) -> None:
+        """Refresh soon, including the slow tier (after a config change)."""
+        self.force_full_refresh = True
+        await self.async_request_refresh()
 
     # ---------------------------
     #   _raise_connection_error
@@ -958,27 +1001,13 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 self.ds["interface"][uid]["tx-total"] = current_tx
                 self.ds["interface"][uid]["rx-total"] = current_rx
 
-        self.ds["interface"] = parse_api(
-            data=self.ds["interface"],
-            source=self.api.query("/interface/ethernet"),
-            key="default-name",
-            key_secondary="name",
-            vals=[
-                {"name": "default-name"},
-                {"name": "name", "default_val": "default-name"},
-                {"name": "poe-out", "default": "N/A"},
-                {"name": "sfp-shutdown-temperature", "default": 0},
-            ],
-            skip=[
-                {"name": "type", "value": "bridge"},
-                {"name": "type", "value": "ppp-in"},
-                {"name": "type", "value": "pptp-in"},
-                {"name": "type", "value": "sstp-in"},
-                {"name": "type", "value": "l2tp-in"},
-                {"name": "type", "value": "pppoe-in"},
-                {"name": "type", "value": "ovpn-in"},
-            ],
-        )
+        # Ethernet config (PoE, SFP shutdown temperature) rarely changes:
+        # read it in the slow tier, or when a new ether port appears.
+        if self._slow_poll or any(
+            vals["type"] == "ether" and "sfp-shutdown-temperature" not in vals
+            for vals in self.ds["interface"].values()
+        ):
+            self._get_ethernet_config()
 
         # Udpate virtual interfaces
         bonding = False
@@ -1025,6 +1054,33 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 for tmp in vals["slaves"].split(","):
                     self.ds["bonding_slaves"][tmp] = vals
                     self.ds["bonding_slaves"][tmp]["master"] = uid
+
+    # ---------------------------
+    #   _get_ethernet_config
+    # ---------------------------
+    def _get_ethernet_config(self) -> None:
+        """Get ethernet port config (PoE, SFP) from Mikrotik"""
+        self.ds["interface"] = parse_api(
+            data=self.ds["interface"],
+            source=self.api.query("/interface/ethernet"),
+            key="default-name",
+            key_secondary="name",
+            vals=[
+                {"name": "default-name"},
+                {"name": "name", "default_val": "default-name"},
+                {"name": "poe-out", "default": "N/A"},
+                {"name": "sfp-shutdown-temperature", "default": 0},
+            ],
+            skip=[
+                {"name": "type", "value": "bridge"},
+                {"name": "type", "value": "ppp-in"},
+                {"name": "type", "value": "pptp-in"},
+                {"name": "type", "value": "sstp-in"},
+                {"name": "type", "value": "l2tp-in"},
+                {"name": "type", "value": "pppoe-in"},
+                {"name": "type", "value": "ovpn-in"},
+            ],
+        )
 
     # ---------------------------
     #   _monitor_ethernet
@@ -1723,7 +1779,9 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             "uptime_epoch" in self.ds["resource"]
             and self.rebootcheck > self.ds["resource"]["uptime_epoch"]
         ):
-            self.get_firmware_update()
+            # Rebooted, possibly into a new version: check again next poll
+            self._last_firmware_check = None
+            self.force_full_refresh = True
 
         if "uptime_epoch" in self.ds["resource"]:
             self.rebootcheck = self.ds["resource"]["uptime_epoch"]
@@ -2056,12 +2114,18 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                         "active-mac-address"
                     ]
 
+            # Static leases use "all"; only look for a new server name once
+            # per slow poll instead of on every poll.
+            server = self.ds["dhcp"][uid]["server"]
             if (
                 not dhcpserver_query
-                and self.ds["dhcp"][uid]["server"] not in self.ds["dhcp-server"]
+                and server not in self.ds["dhcp-server"]
+                and server not in self._dhcp_server_misses
             ):
                 self.get_dhcp_server()
                 dhcpserver_query = True
+                if server not in self.ds["dhcp-server"]:
+                    self._dhcp_server_misses.add(server)
 
             if self.ds["dhcp"][uid]["server"] in self.ds["dhcp-server"]:
                 self.ds["dhcp"][uid]["interface"] = self.ds["dhcp-server"][

@@ -90,7 +90,7 @@ class MikrotikSwitch(MikrotikEntity, SwitchEntity, RestoreEntity):
         await self.async_run_routeros(
             self.coordinator.set_value, path, param, value, mod_param, False
         )
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_request_full_refresh()
 
     async def async_turn_off(self) -> None:
         """Turn off the switch."""
@@ -103,7 +103,7 @@ class MikrotikSwitch(MikrotikEntity, SwitchEntity, RestoreEntity):
         await self.async_run_routeros(
             self.coordinator.set_value, path, param, value, mod_param, True
         )
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_request_full_refresh()
 
 
 # ---------------------------
@@ -195,7 +195,7 @@ class MikrotikPortSwitch(MikrotikSwitch):
             )
 
         await self.async_run_routeros(set_port)
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_request_full_refresh()
 
 
 # NAT, Mangle and Filter rules are keyed and switched by their RouterOS .id,
@@ -226,7 +226,7 @@ class MikrotikQueueSwitch(MikrotikSwitch):
         await self.async_run_routeros(
             self.coordinator.set_value, path, param, value, mod_param, False
         )
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_request_full_refresh()
 
     async def async_turn_off(self) -> None:
         """Turn off the switch."""
@@ -243,7 +243,7 @@ class MikrotikQueueSwitch(MikrotikSwitch):
         await self.async_run_routeros(
             self.coordinator.set_value, path, param, value, mod_param, True
         )
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_request_full_refresh()
 
 
 # ---------------------------
@@ -263,7 +263,7 @@ class MikrotikKidcontrolPauseSwitch(MikrotikSwitch):
         await self.async_run_routeros(
             self.coordinator.execute, path, command, param, value
         )
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_request_full_refresh()
 
     async def async_turn_off(self) -> None:
         """Turn off the switch."""
@@ -276,4 +276,4 @@ class MikrotikKidcontrolPauseSwitch(MikrotikSwitch):
         await self.async_run_routeros(
             self.coordinator.execute, path, command, param, value
         )
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_request_full_refresh()

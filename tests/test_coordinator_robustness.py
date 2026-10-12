@@ -1,7 +1,7 @@
 """Tests for coordinator robustness fixes (items 11, 14, 15)."""
 
 from ipaddress import IPv4Network
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from custom_components.mikrotik_router.coordinator import (
     MikrotikCoordinator,
@@ -20,6 +20,10 @@ def _coordinator(responses=None):
         "dhcp-network": {},
     }
     coordinator.notified_flags = []
+    coordinator._slow_poll = True
+    coordinator._published = {}
+    coordinator._monitor_batch = True
+    coordinator._dhcp_server_misses = set()
     coordinator.api = MagicMock()
     coordinator.api.connected.return_value = True
     responses = responses or {}
@@ -186,3 +190,68 @@ def test_ethernet_monitor_falls_back_per_port() -> None:
     calls.clear()
     coordinator.get_interface()
     assert not [c for c in calls if c and "numbers" in c]
+
+
+async def test_tiered_polling(monkeypatch) -> None:
+    """P3, items 7, 13: static config and the firmware check run less often."""
+    from datetime import datetime
+
+    from custom_components.mikrotik_router import coordinator as module
+
+    clock = [1000.0]
+    monkeypatch.setattr(module, "monotonic", lambda: clock[0])
+    coordinator = _coordinator()
+    coordinator.config_entry = MagicMock(
+        options={"sensor_nat": True, "sensor_scripts": True}
+    )
+    coordinator.hass = MagicMock()
+
+    async def run(func, *args):
+        return func(*args)
+
+    coordinator.hass.async_add_executor_job = run
+    coordinator.api.has_reconnected.return_value = False
+    coordinator.last_hwinfo_update = datetime.now()
+    coordinator.force_full_refresh = True
+    coordinator._last_slow_poll = None
+    coordinator._last_firmware_check = None
+    coordinator.host_hass_recovered = True
+    coordinator.data = None
+    for attr in ("support_capsman", "support_wireless", "support_ppp",
+                 "support_hotspot", "support_ups", "support_gps"):
+        setattr(coordinator, attr, False)
+    calls = []
+    for name in dir(module.MikrotikCoordinator):
+        if name.startswith(("get_", "process_")):
+            monkeypatch.setattr(
+                coordinator, name, lambda name=name: calls.append(name)
+            )
+
+    async def process_host():
+        calls.append("process_host")
+
+    coordinator.async_process_host = process_host
+
+    await coordinator._async_update_data()
+    assert {"get_nat", "get_dhcp_client", "get_script"} <= set(calls)
+    assert "get_firmware_update" not in calls  # never during first refresh
+
+    coordinator.data = coordinator.ds
+    calls.clear()
+    clock[0] += 30
+    await coordinator._async_update_data()
+    assert "get_nat" not in calls and "get_dhcp_client" not in calls
+    assert {"get_script", "get_interface", "get_firmware_update"} <= set(calls)
+
+    calls.clear()
+    clock[0] += 30
+    coordinator.async_request_refresh = AsyncMock()
+    await coordinator.async_request_full_refresh()
+    coordinator.async_request_refresh.assert_awaited_once()
+    await coordinator._async_update_data()
+    assert "get_nat" in calls and "get_firmware_update" not in calls
+
+    calls.clear()
+    clock[0] += 300
+    await coordinator._async_update_data()
+    assert "get_nat" in calls

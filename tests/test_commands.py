@@ -20,7 +20,7 @@ def _port_switch(hass, row):
     }
     coordinator.config_entry.data = {"name": "Mikrotik"}
     coordinator.command_lock = asyncio.Lock()
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_request_full_refresh = AsyncMock()
     coordinator.async_refresh = AsyncMock()
     switch = MikrotikPortSwitch(coordinator, description, "ether1")
     switch.hass = hass
@@ -59,7 +59,7 @@ async def test_port_and_poe_change_in_one_job(hass: HomeAssistant) -> None:
         ("poe-out", "off"),
     ]
     assert len(threads) == 1
-    coordinator.async_request_refresh.assert_awaited_once()
+    coordinator.async_request_full_refresh.assert_awaited_once()
     coordinator.async_refresh.assert_not_called()
 
     coordinator.set_value.reset_mock()
