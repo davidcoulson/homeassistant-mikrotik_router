@@ -3,7 +3,7 @@
         "step": {
             "user": {
                 "title": "Set up Mikrotik Router",
-                "description": "Set up Mikrotik Router integration.",
+                "description": "Set up Mikrotik Router integration. SSL with certificate verification is recommended; turn them off only if the router has no api-ssl service or no trusted certificate.",
                 "data": {
                     "name": "Name of the integration",
                     "host": "Host",
@@ -84,6 +84,16 @@
                 "title": "Mikrotik Router options (2\/2)",
                 "description": "Enable sensors and switches"
             }
+        }
+    },
+    "issues": {
+        "insecure_connection": {
+            "title": "{name} uses an unencrypted RouterOS connection",
+            "description": "The {name} entry logs in to RouterOS over the plain API (port 8728), so the password and all data cross the network unencrypted. Enable the api-ssl service on the router, then reconfigure the entry with SSL and certificate verification on."
+        },
+        "unverified_connection": {
+            "title": "{name} does not verify the router certificate",
+            "description": "The {name} entry uses SSL without verifying the router certificate, so an attacker on the network could impersonate the router and capture the password. Install a certificate on the router that matches the configured host and is trusted by Home Assistant, then reconfigure the entry with certificate verification on."
         }
     },
     "exceptions": {

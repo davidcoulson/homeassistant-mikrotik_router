@@ -15,6 +15,7 @@ from homeassistant.components.sensor import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv, service
 from homeassistant.helpers import device_registry, entity_registry
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.const import (
     CONF_HOST,
@@ -29,7 +30,7 @@ from homeassistant.const import (
 )
 from homeassistant.util import slugify
 
-from .const import PLATFORMS, DOMAIN, DEFAULT_VERIFY_SSL
+from .const import PLATFORMS, DOMAIN, LEGACY_VERIFY_SSL
 from .coordinator import (
     MikrotikConfigEntry,
     MikrotikData,
@@ -108,6 +109,7 @@ async def async_setup_entry(
     hass: HomeAssistant, config_entry: MikrotikConfigEntry
 ) -> bool:
     """Set up a config entry."""
+    _async_check_connection_security(hass, config_entry)
     coordinator = MikrotikCoordinator(hass, config_entry)
     apis = [coordinator.api]
 
@@ -136,6 +138,45 @@ async def async_setup_entry(
     config_entry.async_on_unload(config_entry.add_update_listener(async_reload_entry))
 
     return True
+
+
+# ---------------------------
+#   _async_check_connection_security
+# ---------------------------
+@callback
+def _async_check_connection_security(
+    hass: HomeAssistant, config_entry: MikrotikConfigEntry
+) -> None:
+    """Raise a repair issue for entries without SSL or certificate checks.
+
+    Existing entries keep their settings; the user decides when to switch.
+    """
+    issue_ids = {
+        "insecure_connection": f"insecure_connection_{config_entry.entry_id}",
+        "unverified_connection": f"unverified_connection_{config_entry.entry_id}",
+    }
+    if not config_entry.data.get(CONF_SSL):
+        active = "insecure_connection"
+    elif not config_entry.data.get(CONF_VERIFY_SSL):
+        active = "unverified_connection"
+    else:
+        active = None
+
+    for translation_key, issue_id in issue_ids.items():
+        if translation_key != active:
+            ir.async_delete_issue(hass, DOMAIN, issue_id)
+            continue
+
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            is_persistent=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=translation_key,
+            translation_placeholders={"name": config_entry.title},
+        )
 
 
 # ---------------------------
@@ -310,6 +351,17 @@ async def async_unload_entry(
 
 
 # ---------------------------
+#   async_remove_entry
+# ---------------------------
+async def async_remove_entry(
+    hass: HomeAssistant, config_entry: MikrotikConfigEntry
+) -> None:
+    """Drop the entry's repair issues when it is deleted."""
+    for prefix in ("insecure_connection", "unverified_connection"):
+        ir.async_delete_issue(hass, DOMAIN, f"{prefix}_{config_entry.entry_id}")
+
+
+# ---------------------------
 #   async_remove_config_entry_device
 # ---------------------------
 async def async_remove_config_entry_device(
@@ -404,7 +456,7 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: MikrotikConfigE
     new_unique_id = config_entry.unique_id
 
     if new_version < 2:
-        new_data[CONF_VERIFY_SSL] = DEFAULT_VERIFY_SSL
+        new_data[CONF_VERIFY_SSL] = LEGACY_VERIFY_SSL
         new_version = 2
         new_minor_version = 1
 

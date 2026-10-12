@@ -22,8 +22,11 @@ DEFAULT_HOST = "10.0.0.1"
 DEFAULT_USERNAME = "admin"
 DEFAULT_PORT = 0
 DEFAULT_DEVICE_NAME = "Mikrotik"
-DEFAULT_SSL = False
-DEFAULT_VERIFY_SSL = False
+# New entries use SSL with certificate verification (M1)
+DEFAULT_SSL = True
+DEFAULT_VERIFY_SSL = True
+# Entries created before verify_ssl existed never verified certificates
+LEGACY_VERIFY_SSL = False
 
 CONF_SCAN_INTERVAL = "scan_interval"
 DEFAULT_SCAN_INTERVAL = 30
