@@ -26,6 +26,7 @@ from homeassistant.const import (
     CONF_VERIFY_SSL,
     CONF_ZONE,
     STATE_HOME,
+    STATE_UNAVAILABLE,
     Platform,
 )
 from homeassistant.util import slugify
@@ -477,9 +478,26 @@ async def async_remove_entry(
 async def async_remove_config_entry_device(
     hass, config_entry: MikrotikConfigEntry, device_entry: device_registry.DeviceEntry
 ) -> bool:
-    """Allow removing any device except the router itself."""
+    """Allow removing stale devices only.
+
+    The router and any device with a live entity would be recreated on the
+    next reload, losing the user's area and name, so they can't be removed.
+    """
     runtime_data = getattr(config_entry, "runtime_data", None)
-    return runtime_data is None or device_entry.id != runtime_data.router_device_id
+    if runtime_data is not None and device_entry.id == runtime_data.router_device_id:
+        return False
+
+    ent_reg = entity_registry.async_get(hass)
+    for entry in entity_registry.async_entries_for_device(
+        ent_reg, device_entry.id, include_disabled_entities=True
+    ):
+        if entry.config_entry_id != config_entry.entry_id:
+            continue
+        state = hass.states.get(entry.entity_id)
+        if state is not None and state.state != STATE_UNAVAILABLE:
+            return False
+
+    return True
 
 
 # ---------------------------

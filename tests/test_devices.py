@@ -263,7 +263,13 @@ async def test_orphaned_devices_removed(hass: HomeAssistant) -> None:
     assert not await async_remove_config_entry_device(
         hass, entry, dev_reg.async_get(router.id)
     )
-    child = dr.async_entries_for_parent_device(dev_reg, router.id)[0]
+    # L1: child devices with live entities can't be removed either
+    children = dr.async_entries_for_parent_device(dev_reg, router.id)
+    child = next(c for c in children if c.name == "ether1")
+    assert not await async_remove_config_entry_device(hass, entry, child)
+    # Once its entities are unavailable (interface gone), it can
+    for ent in er.async_entries_for_device(er.async_get(hass), child.id):
+        hass.states.async_set(ent.entity_id, "unavailable")
     assert await async_remove_config_entry_device(hass, entry, child)
 
     # M3: unloading closes both RouterOS connections
@@ -337,3 +343,4 @@ def test_device_info_links_to_router(description) -> None:
         assert identifier[0] == DOMAIN
         assert identifier[1].startswith(f"{entry_id}-")
         assert device_info["name"]
+
