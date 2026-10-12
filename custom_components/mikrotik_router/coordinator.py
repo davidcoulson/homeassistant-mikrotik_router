@@ -11,7 +11,6 @@ from time import monotonic
 from datetime import UTC, datetime, timedelta
 from dataclasses import dataclass
 from ipaddress import ip_address, IPv4Network
-from mac_vendor_lookup import AsyncMacLookup
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -70,6 +69,7 @@ from .const import (
 )
 from .apiparser import parse_api
 from .mikrotikapi import MikrotikAPI
+from .vendor_lookup import VendorLookup
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -389,7 +389,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         self.major_fw_version = 0
         self.minor_fw_version = 0
 
-        self.async_mac_lookup = AsyncMacLookup()
+        self.async_mac_lookup = VendorLookup(hass)
         self.accessrights_reported = False
 
         self.last_hwinfo_update = datetime(1970, 1, 1)
@@ -2540,12 +2540,9 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
 
             # Resolve manufacturer
             if vals["manufacturer"] == "detect" and vals["mac-address"] != "unknown":
-                try:
-                    self.ds["host"][uid]["manufacturer"] = (
-                        await self.async_mac_lookup.lookup(vals["mac-address"])
-                    )
-                except Exception:
-                    self.ds["host"][uid]["manufacturer"] = ""
+                self.ds["host"][uid]["manufacturer"] = (
+                    await self.async_mac_lookup.lookup(vals["mac-address"])
+                )
 
             if vals["manufacturer"] == "detect":
                 self.ds["host"][uid]["manufacturer"] = ""
