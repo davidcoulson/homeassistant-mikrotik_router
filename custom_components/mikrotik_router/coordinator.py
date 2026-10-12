@@ -7,9 +7,7 @@ import logging
 import re
 from time import monotonic
 
-import pytz
-
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from dataclasses import dataclass
 from ipaddress import ip_address, IPv4Network
 from mac_vendor_lookup import AsyncMacLookup
@@ -74,9 +72,6 @@ from .mikrotikapi import MikrotikAPI
 
 _LOGGER = logging.getLogger(__name__)
 
-DEFAULT_TIME_ZONE = None
-
-
 def is_valid_ip(address):
     try:
         ipaddress.ip_address(address)
@@ -87,17 +82,7 @@ def is_valid_ip(address):
 
 def utc_from_timestamp(timestamp: float) -> datetime:
     """Return a UTC time from a timestamp."""
-    return pytz.utc.localize(datetime.utcfromtimestamp(timestamp))
-
-
-def as_local(dattim: datetime) -> datetime:
-    """Convert a UTC datetime object to local time zone."""
-    if dattim.tzinfo == DEFAULT_TIME_ZONE:
-        return dattim
-    if dattim.tzinfo is None:
-        dattim = pytz.utc.localize(dattim)
-
-    return dattim.astimezone(DEFAULT_TIME_ZONE)
+    return datetime.fromtimestamp(timestamp, tz=UTC)
 
 
 @dataclass
