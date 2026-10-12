@@ -18,7 +18,7 @@ from homeassistant.components.update import (
 
 from .coordinator import MikrotikConfigEntry, MikrotikCoordinator
 from .entity import MikrotikEntity, async_add_entities
-from .helper import normalize_routeros_version
+from .helper import routeros_release_name
 from .update_types import (
     SENSOR_TYPES,
     SENSOR_SERVICES,
@@ -162,20 +162,17 @@ class MikrotikRouterBoardFWUpdate(MikrotikEntity, UpdateEntity):
     @property
     def is_on(self) -> bool:
         """Return true if device is on."""
-        return (
-            self.data["routerboard"]["current-firmware"]
-            != self.data["routerboard"]["upgrade-firmware"]
-        )
+        return self.installed_version != self.latest_version
 
     @property
-    def installed_version(self) -> str:
+    def installed_version(self) -> str | None:
         """Version installed and in use."""
-        return self._data["current-firmware"]
+        return self._data.get("current-firmware")
 
     @property
-    def latest_version(self) -> str:
+    def latest_version(self) -> str | None:
         """Latest version available for install."""
-        return self._data["upgrade-firmware"]
+        return self._data.get("upgrade-firmware")
 
     async def options_updated(self) -> None:
         """No action needed."""
@@ -243,9 +240,20 @@ async def fetch_changelogs(session, installed_version: str, latest_version: str)
     within a series are probed sequentially so only existing releases are
     requested.
     """
-    start = Version(normalize_routeros_version(installed_version))
-    end = Version(normalize_routeros_version(latest_version))
-    if end <= start:
+    installed, installed_pre = routeros_release_name(installed_version)
+    latest, latest_pre = routeros_release_name(latest_version)
+    if latest_pre:
+        # A prerelease changelog covers the whole rc/beta series
+        if (latest, latest_pre) == (installed, installed_pre):
+            return []
+        changelog = await fetch_changelog(session, f"{latest}{latest_pre}")
+        return [changelog] if changelog else []
+
+    start = Version(installed)
+    end = Version(latest)
+    # From 7.20rc2 to 7.20, the 7.20 changelog itself is new
+    include_start = bool(installed_pre)
+    if end < start or (end == start and not include_start):
         return []
     if end.major != start.major:
         changelog = await fetch_changelog(
@@ -255,7 +263,10 @@ async def fetch_changelogs(session, installed_version: str, latest_version: str)
 
     series = []
     for minor in range(start.minor, end.minor + 1):
-        first_patch = start.micro + 1 if minor == start.minor else 0
+        if minor != start.minor:
+            first_patch = 0
+        else:
+            first_patch = start.micro if include_start else start.micro + 1
         last_patch = end.micro if minor == end.minor else None
         series.append(
             _fetch_minor_changelogs(session, end.major, minor, first_patch, last_patch)

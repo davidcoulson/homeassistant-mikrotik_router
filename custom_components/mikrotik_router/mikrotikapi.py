@@ -18,6 +18,9 @@ from librouteros.exceptions import MultiTrapError, TrapError
 
 _LOGGER = logging.getLogger(__name__)
 
+# Socket timeout in seconds. Longer than the 10 s check-for-updates command.
+API_TIMEOUT = 15
+
 
 # ---------------------------
 #   MikrotikAPI
@@ -35,6 +38,7 @@ class MikrotikAPI:
         ssl_verify=True,
         login_method=DEFAULT_LOGIN_METHOD,
         encoding=DEFAULT_ENCODING,
+        timeout=API_TIMEOUT,
     ):
         """Initialize the Mikrotik Client."""
         self._host = host
@@ -45,11 +49,14 @@ class MikrotikAPI:
         self._password = password
         self._login_method = login_method
         self._encoding = encoding
+        self._timeout = timeout
         self._ssl_wrapper = None
         # API operations can call query() or connect() while holding the lock.
         self.lock = RLock()
 
         self._connection = None
+        self._closed = False
+        self.accounting_threshold = 0
         self._connected = False
         self._reconnected = True
         self._connection_epoch = 0
@@ -79,14 +86,42 @@ class MikrotikAPI:
     # ---------------------------
     def connection_check(self) -> bool:
         """Check if mikrotik is connected"""
-        if not self._connected or not self._connection:
-            if self._connection_epoch > time() - self._connection_retry_sec:
+        # Locked so that two threads can't both open a connection.
+        with self.lock:
+            if self._closed:
                 return False
 
-            if not self.connect():
-                return False
+            if not self._connected or not self._connection:
+                if self._connection_epoch > time() - self._connection_retry_sec:
+                    return False
+
+                if not self.connect():
+                    return False
 
         return True
+
+    # ---------------------------
+    #   close
+    # ---------------------------
+    def close(self) -> None:
+        """Close the connection for good, e.g. when the entry is unloaded."""
+        with self.lock:
+            self._closed = True
+            self._close_connection()
+            self._connected = False
+
+    # ---------------------------
+    #   _close_connection
+    # ---------------------------
+    def _close_connection(self) -> None:
+        """Close the librouteros socket, ignoring errors."""
+        connection, self._connection = self._connection, None
+        if connection is None:
+            return
+        try:
+            connection.close()
+        except Exception as e:  # noqa: BLE001
+            _LOGGER.debug("Mikrotik %s error while closing: %s", self._host, e)
 
     # ---------------------------
     #   disconnect
@@ -106,38 +141,38 @@ class MikrotikAPI:
 
             self.connection_error_reported = True
 
-        self._reconnected = False
-        self._connected = False
-        self._connection = None
-        self._connection_epoch = 0
+        with self.lock:
+            self._reconnected = False
+            self._connected = False
+            self._close_connection()
+            self._connection_epoch = 0
 
     # ---------------------------
     #   connect
     # ---------------------------
     def connect(self) -> bool:
         """Connect to Mikrotik device."""
+        self.lock.acquire()
+        if self._closed:
+            self.lock.release()
+            return False
+
         self.error = ""
         self._connected = False
+        self._close_connection()
         self._connection_epoch = time()
 
         kwargs = {
             "encoding": self._encoding,
             "port": self._port,
+            "timeout": self._timeout,
         }
         kwargs.update(self._login_kwargs())
 
-        self.lock.acquire()
         try:
             if self._use_ssl:
                 if self._ssl_wrapper is None:
-                    ssl_context = ssl.create_default_context()
-                    ssl_context.check_hostname = False
-                    if self._ssl_verify:
-                        ssl_context.verify_mode = ssl.CERT_REQUIRED
-                        ssl_context.verify_flags &= ~ssl.VERIFY_X509_STRICT
-                    else:
-                        ssl_context.verify_mode = ssl.CERT_NONE
-                    self._ssl_wrapper = ssl_context.wrap_socket
+                    self._ssl_wrapper = self._build_ssl_wrapper()
                 kwargs["ssl_wrapper"] = self._ssl_wrapper
 
             self._connection = librouteros.connect(
@@ -210,6 +245,27 @@ class MikrotikAPI:
         self.lock.release()
 
         return self._connected
+
+    # ---------------------------
+    #   _build_ssl_wrapper
+    # ---------------------------
+    def _build_ssl_wrapper(self):
+        """Return a socket wrapper for the configured TLS settings."""
+        ssl_context = ssl.create_default_context()
+        if not self._ssl_verify:
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            return ssl_context.wrap_socket
+
+        # Verify the chain and that the certificate matches the configured host.
+        ssl_context.check_hostname = True
+        ssl_context.verify_mode = ssl.CERT_REQUIRED
+        ssl_context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+
+        def wrap_socket(sock):
+            return ssl_context.wrap_socket(sock, server_hostname=self._host)
+
+        return wrap_socket
 
     # ---------------------------
     #   _login_callable
@@ -476,52 +532,44 @@ class MikrotikAPI:
     # ---------------------------
     def run_script(self, name) -> bool:
         """Run script"""
-        entry_found = None
-        if not self.connection_check():
-            return False
+        # Lookup and run share one lock so a reconnect can't swap the socket.
+        with self.lock:
+            entry_found = None
+            if not self.connection_check():
+                return False
 
-        response = self.query("/system/script", return_list=False)
-        if response is None:
-            return False
+            response = self.query("/system/script", return_list=False)
+            if response is None:
+                return False
 
-        self.lock.acquire()
-        try:
-            for tmp in response:
-                if "name" not in tmp:
-                    continue
+            try:
+                for tmp in response:
+                    if "name" not in tmp:
+                        continue
 
-                if tmp["name"] != name:
-                    continue
+                    if tmp["name"] != name:
+                        continue
 
-                entry_found = tmp[".id"]
+                    entry_found = tmp[".id"]
 
-            if not entry_found:
-                raise ApiEntryNotFound(f"script={name}")
+                if not entry_found:
+                    raise ApiEntryNotFound(f"script={name}")
 
-            run = response("run", **{".id": entry_found})
-            tuple(run)
-        except ApiEntryNotFound:
-            raise
-        except Exception as e:
-            self.disconnect("run_script", e)
-            return False
-        finally:
-            self.lock.release()
+                run = response("run", **{".id": entry_found})
+                tuple(run)
+            except ApiEntryNotFound:
+                raise
+            except Exception as e:
+                self.disconnect("run_script", e)
+                return False
 
         return True
 
     # ---------------------------
     #   arp_ping
     # ---------------------------
-    def arp_ping(self, address, interface) -> bool:
-        """Check arp ping response traffic stats"""
-        if not self.connection_check():
-            return False
-
-        response = self.query("/ping", return_list=False)
-        if response is None:
-            return False
-
+    def arp_ping(self, address, interface) -> bool | None:
+        """Ping a host. Return None when the API itself failed."""
         args = {
             "arp-ping": "no",
             "interval": "100ms",
@@ -529,23 +577,19 @@ class MikrotikAPI:
             "interface": interface,
             "address": address,
         }
-        self.lock.acquire()
-        try:
-            # _LOGGER.debug("Ping host query: %s", args["address"])
-            ping = response("/ping", **args)
-        except Exception as e:
-            self.disconnect("arp_ping", e)
-            self.lock.release()
-            return False
+        with self.lock:
+            if not self.connection_check():
+                return None
 
-        try:
-            ping = list(ping)
-        except Exception as e:
-            self.disconnect("arp_ping", e)
-            self.lock.release()
-            return False
+            response = self.query("/ping", return_list=False)
+            if response is None:
+                return None
 
-        self.lock.release()
+            try:
+                ping = list(response("/ping", **args))
+            except Exception as e:
+                self.disconnect("arp_ping", e)
+                return None
 
         for tmp in ping:
             if "received" in tmp and tmp["received"] > 0:
@@ -566,6 +610,12 @@ class MikrotikAPI:
         response = self.query("/ip/accounting")
         if response is None:
             return False, False
+
+        # Kept for process_accounting, so it need not read the path again
+        try:
+            self.accounting_threshold = int(response[0].get("threshold") or 0)
+        except (IndexError, TypeError, ValueError):
+            self.accounting_threshold = 0
 
         for item in response:
             if "enabled" not in item:
@@ -591,25 +641,16 @@ class MikrotikAPI:
             return 0
 
         if use_accounting:
-            accounting = self.query("/ip/accounting", return_list=False)
+            with self.lock:
+                accounting = self.query("/ip/accounting", return_list=False)
+                if accounting is None:
+                    return 0
 
-            self.lock.acquire()
-            try:
-                # Prepare command
-                take = accounting("snapshot/take")
-            except Exception as e:
-                self.disconnect("accounting_snapshot", e)
-                self.lock.release()
-                return 0
-
-            try:
-                list(take)
-            except Exception as e:
-                self.disconnect("accounting_snapshot", e)
-                self.lock.release()
-                return 0
-
-            self.lock.release()
+                try:
+                    list(accounting("snapshot/take"))
+                except Exception as e:
+                    self.disconnect("accounting_snapshot", e)
+                    return 0
 
         client_traffic_current_run = monotonic()
 

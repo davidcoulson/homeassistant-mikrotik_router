@@ -1,9 +1,8 @@
 """API parser for JSON APIs."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from logging import getLogger
 
-from pytz import utc
 from voluptuous import Optional
 
 from homeassistant.components.diagnostics import async_redact_data
@@ -18,7 +17,7 @@ _LOGGER = getLogger(__name__)
 # ---------------------------
 def utc_from_timestamp(timestamp: float) -> datetime:
     """Return a UTC time from a timestamp."""
-    return utc.localize(datetime.utcfromtimestamp(timestamp))
+    return datetime.fromtimestamp(timestamp, tz=UTC)
 
 
 # ---------------------------
@@ -39,7 +38,7 @@ def from_entry(entry, param, default="") -> str:
     else:
         return default
 
-    if default != "":
+    if default != "" and not isinstance(ret, bool):
         if isinstance(ret, str):
             ret = str(ret)
         elif isinstance(ret, int):
@@ -77,7 +76,7 @@ def from_entry_bool(entry, param, default=False, reverse=False) -> bool:
     if not isinstance(ret, bool):
         ret = default
 
-    return not ret if reverse else ret
+    return not ret if reverse and isinstance(ret, bool) else ret
 
 
 # ---------------------------
@@ -95,13 +94,16 @@ def parse_api(
     only=None,
     skip=None,
     prune=False,
+    redact=None,
 ) -> dict:
     """Get data from API.
 
     With prune, keyed entries missing from a successfully fetched source
     (a list, possibly empty) are removed, so deleted rows do not linger.
+    Keys in redact are hidden in debug logs on top of TO_REDACT.
     """
     debug = _LOGGER.getEffectiveLevel() == 10
+    to_redact = TO_REDACT | set(redact) if redact else TO_REDACT
     if type(source) == dict:
         tmp = source
         source = [tmp]
@@ -115,7 +117,7 @@ def parse_api(
         return data
 
     if debug:
-        _LOGGER.debug("Processing source %s", async_redact_data(source, TO_REDACT))
+        _LOGGER.debug("Processing source %s", async_redact_data(source, to_redact))
 
     keymap = generate_keymap(data, key_search)
     for entry in source:
@@ -135,7 +137,7 @@ def parse_api(
                 data[uid] = {}
 
         if debug:
-            _LOGGER.debug("Processing entry %s", async_redact_data(entry, TO_REDACT))
+            _LOGGER.debug("Processing entry %s", async_redact_data(entry, to_redact))
 
         if vals:
             data = fill_vals(data, entry, uid, vals)
@@ -177,11 +179,7 @@ def get_uid(entry, key, key_secondary, key_search, keymap) -> Optional(str):
     """Get UID for data list."""
     uid = None
     if not key_search:
-        key_primary_found = key in entry
-        if key_primary_found and key not in entry and not entry[key]:
-            return None
-
-        if key_primary_found:
+        if entry.get(key):
             uid = entry[key]
         elif key_secondary:
             if key_secondary not in entry:

@@ -57,6 +57,7 @@ from .const import (
     DEFAULT_SENSOR_ENVIRONMENT,
     CONF_TRACK_HOSTS_TIMEOUT,
     DEFAULT_TRACK_HOST_TIMEOUT,
+    MAX_TRACK_HOST_TIMEOUT,
     DEFAULT_HOST,
     DEFAULT_USERNAME,
     DEFAULT_PORT,
@@ -85,6 +86,14 @@ def validate_input(user_input):
         use_ssl=user_input[CONF_SSL],
         ssl_verify=user_input[CONF_VERIFY_SSL],
     )
+    try:
+        return _validate_with_api(api, user_input)
+    finally:
+        api.close()
+
+
+def _validate_with_api(api, user_input):
+    """Validate the connection using an API client the caller closes."""
     if not api.connect():
         return None, "invalid_auth" if api.error == "wrong_login" else api.error
 
@@ -147,8 +156,10 @@ def validate_input(user_input):
 @callback
 def configured_instances(hass):
     """Return a set of configured instances."""
+    # Entity unique ids use the lower-cased name, so compare case-insensitively
     return set(
-        entry.data[CONF_NAME] for entry in hass.config_entries.async_entries(DOMAIN)
+        entry.data[CONF_NAME].casefold()
+        for entry in hass.config_entries.async_entries(DOMAIN)
     )
 
 
@@ -180,7 +191,7 @@ class MikrotikControllerConfigFlow(ConfigFlow, domain=DOMAIN):
         errors = {}
         if user_input is not None:
             # Check if instance with this name already exists
-            if user_input[CONF_NAME] in configured_instances(self.hass):
+            if user_input[CONF_NAME].casefold() in configured_instances(self.hass):
                 errors["base"] = "name_exists"
             else:
                 unique_id, error = await self.hass.async_add_executor_job(
@@ -425,7 +436,15 @@ class MikrotikControllerOptionsFlowHandler(OptionsFlow):
                         default=self.config_entry.options.get(
                             CONF_TRACK_HOSTS_TIMEOUT, DEFAULT_TRACK_HOST_TIMEOUT
                         ),
-                    ): int,
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=1,
+                            max=MAX_TRACK_HOST_TIMEOUT,
+                            step=1,
+                            mode=selector.NumberSelectorMode.BOX,
+                            unit_of_measurement=UnitOfTime.SECONDS,
+                        ),
+                    ),
                 }
             ),
         )

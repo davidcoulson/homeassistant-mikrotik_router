@@ -15,6 +15,7 @@ from homeassistant.components.sensor import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv, service
 from homeassistant.helpers import device_registry, entity_registry
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.const import (
     CONF_HOST,
@@ -25,18 +26,23 @@ from homeassistant.const import (
     CONF_VERIFY_SSL,
     CONF_ZONE,
     STATE_HOME,
+    STATE_UNAVAILABLE,
     Platform,
 )
 from homeassistant.util import slugify
 
-from .const import PLATFORMS, DOMAIN, DEFAULT_VERIFY_SSL
+from .const import PLATFORMS, DOMAIN, LEGACY_VERIFY_SSL
 from .coordinator import (
     MikrotikConfigEntry,
     MikrotikData,
     MikrotikCoordinator,
     MikrotikTrackerCoordinator,
 )
-from .helper import child_device_identifier, router_unique_id
+from .helper import (
+    INVALID_ROUTER_IDENTIFIERS,
+    child_device_identifier,
+    router_unique_id,
+)
 from .binary_sensor_types import SENSOR_TYPES as BINARY_SENSOR_TYPES
 from .button_types import SENSOR_TYPES as BUTTON_TYPES
 from .sensor_types import SENSOR_TYPES as SENSOR_PLATFORM_TYPES
@@ -108,17 +114,31 @@ async def async_setup_entry(
     hass: HomeAssistant, config_entry: MikrotikConfigEntry
 ) -> bool:
     """Set up a config entry."""
+    _async_check_connection_security(hass, config_entry)
     coordinator = MikrotikCoordinator(hass, config_entry)
+    apis = [coordinator.api]
+
+    async def _async_close_apis() -> None:
+        """Close the RouterOS sockets on unload or failed setup."""
+        for api in apis:
+            await hass.async_add_executor_job(api.close)
+
+    config_entry.async_on_unload(_async_close_apis)
     await coordinator.async_config_entry_first_refresh()
     _async_update_router_unique_id(hass, config_entry, coordinator)
-    router_device_id = _async_setup_router_device(hass, config_entry, coordinator)
+    _async_migrate_firewall_unique_ids(hass, config_entry, coordinator)
+    router_device_id, router_identifier = _async_setup_router_device(
+        hass, config_entry, coordinator
+    )
     _async_migrate_child_devices(hass, config_entry, coordinator, router_device_id)
     coordinatorTracker = MikrotikTrackerCoordinator(hass, config_entry, coordinator)
+    apis.append(coordinatorTracker.api)
     await coordinatorTracker.async_config_entry_first_refresh()
     config_entry.runtime_data = MikrotikData(
         data_coordinator=coordinator,
         tracker_coordinator=coordinatorTracker,
         router_device_id=router_device_id,
+        router_identifier=router_identifier,
     )
 
     await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
@@ -130,21 +150,162 @@ async def async_setup_entry(
 
 
 # ---------------------------
+#   _async_check_connection_security
+# ---------------------------
+@callback
+def _async_check_connection_security(
+    hass: HomeAssistant, config_entry: MikrotikConfigEntry
+) -> None:
+    """Raise a repair issue for entries without SSL or certificate checks.
+
+    Existing entries keep their settings; the user decides when to switch.
+    """
+    issue_ids = {
+        "insecure_connection": f"insecure_connection_{config_entry.entry_id}",
+        "unverified_connection": f"unverified_connection_{config_entry.entry_id}",
+    }
+    if not config_entry.data.get(CONF_SSL):
+        active = "insecure_connection"
+    elif not config_entry.data.get(CONF_VERIFY_SSL):
+        active = "unverified_connection"
+    else:
+        active = None
+
+    for translation_key, issue_id in issue_ids.items():
+        if translation_key != active:
+            ir.async_delete_issue(hass, DOMAIN, issue_id)
+            continue
+
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            is_persistent=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=translation_key,
+            translation_placeholders={"name": config_entry.title},
+        )
+
+
+# ---------------------------
+#   _async_migrate_firewall_unique_ids
+# ---------------------------
+FIREWALL_RULE_PATHS = ("nat", "mangle", "filter")
+
+
+@callback
+def _async_migrate_firewall_unique_ids(
+    hass: HomeAssistant,
+    config_entry: MikrotikConfigEntry,
+    coordinator: MikrotikCoordinator,
+) -> None:
+    """Move NAT/Mangle/Filter switches from content-based to .id-based unique ids.
+
+    The old unique id was built from the rule's matchers, so editing a rule
+    created a second entity. Runs on every setup and only renames entities whose
+    rule is present in the current data, so it is idempotent.
+    """
+    ent_reg = entity_registry.async_get(hass)
+    inst = config_entry.data[CONF_NAME].lower()
+    for key in FIREWALL_RULE_PATHS:
+        rows = (coordinator.data or {}).get(key) or {}
+        old_to_new = {}
+        duplicates = set()
+        for row in rows.values():
+            if not row.get("uniq-id") or not row.get(".id"):
+                continue
+            old = f"{inst}-{key}-{slugify(str(row['uniq-id']).lower())}"
+            if old in old_to_new:
+                duplicates.add(old)
+            old_to_new[old] = f"{inst}-{key}-{slugify(str(row['.id']).lower())}"
+
+        for old, new in old_to_new.items():
+            if old in duplicates:
+                # Duplicate rules had no entity: nothing to migrate
+                continue
+            entity_id = ent_reg.async_get_entity_id(Platform.SWITCH, DOMAIN, old)
+            if entity_id is None:
+                continue
+            if ent_reg.async_get_entity_id(Platform.SWITCH, DOMAIN, new):
+                _LOGGER.debug("Not migrating %s: %s already exists", entity_id, new)
+                continue
+            _LOGGER.debug("Migrating %s unique id %s -> %s", entity_id, old, new)
+            ent_reg.async_update_entity(entity_id, new_unique_id=new)
+
+
+# ---------------------------
+#   _async_router_identifier
+# ---------------------------
+@callback
+def _async_router_identifier(
+    hass: HomeAssistant,
+    config_entry: MikrotikConfigEntry,
+    coordinator: MikrotikCoordinator,
+) -> tuple[str, str]:
+    """Return the router device identifier, migrating placeholder serials.
+
+    RouterBOARDs keep their serial number as identifier. CHR/x86 report the
+    serial as "N/A" and some boards hide it, so such routers registered a
+    (DOMAIN, "N/A") or (DOMAIN, "unknown") device, shared between entries on
+    older HA releases. They now use the config entry ID.
+    """
+    serial_number = f"{coordinator.data['routerboard']['serial-number']}"
+    if serial_number.strip().casefold() not in INVALID_ROUTER_IDENTIFIERS:
+        return (DOMAIN, serial_number)
+
+    fallback = (DOMAIN, config_entry.entry_id)
+    registry = device_registry.async_get(hass)
+    for device in device_registry.async_entries_for_config_entry(
+        registry, config_entry.entry_id
+    ):
+        router_ids = {
+            value
+            for domain, value in device.identifiers
+            if domain == DOMAIN and not value.startswith(f"{config_entry.entry_id}-")
+        }
+        if not router_ids or fallback[1] in router_ids:
+            continue
+
+        if any(
+            value.strip().casefold() not in INVALID_ROUTER_IDENTIFIERS
+            for value in router_ids
+        ):
+            # A real serial is registered, but this poll couldn't read it:
+            # keep using the existing device.
+            return (DOMAIN, sorted(router_ids)[0])
+
+        # Re-key the placeholder device in place, so its ID, area, name and
+        # children stay the same.
+        registry.async_update_device(
+            device.id,
+            new_identifiers={fallback},
+            new_connections={
+                connection
+                for connection in device.connections
+                if connection[0] != DOMAIN
+            },
+        )
+        break
+
+    return fallback
+
+
+# ---------------------------
 #   _async_setup_router_device
 # ---------------------------
 def _async_setup_router_device(
     hass: HomeAssistant,
     config_entry: MikrotikConfigEntry,
     coordinator: MikrotikCoordinator,
-) -> str:
+) -> tuple[str, tuple[str, str]]:
     """Set up the router device before its child devices."""
-    serial_number = f"{coordinator.data['routerboard']['serial-number']}"
-    protocol = "https" if config_entry.data[CONF_SSL] else "http"
     registry = device_registry.async_get(hass)
+    identifier = _async_router_identifier(hass, config_entry, coordinator)
+    protocol = "https" if config_entry.data[CONF_SSL] else "http"
     device = registry.async_get_or_create(
         config_entry_id=config_entry.entry_id,
-        connections={(DOMAIN, serial_number)},
-        identifiers={(DOMAIN, serial_number)},
+        identifiers={identifier},
         name=f"{config_entry.data[CONF_NAME]} {coordinator.data['resource']['board-name']}",
         model=f"{coordinator.data['resource']['board-name']}",
         manufacturer=f"{coordinator.data['resource']['platform']}",
@@ -164,7 +325,7 @@ def _async_setup_router_device(
             registry.async_update_device(device_id, sw_version=f"{version}")
 
     config_entry.async_on_unload(coordinator.async_add_listener(_async_update_sw_version))
-    return device_id
+    return device_id, identifier
 
 
 # ---------------------------
@@ -301,14 +462,42 @@ async def async_unload_entry(
 
 
 # ---------------------------
+#   async_remove_entry
+# ---------------------------
+async def async_remove_entry(
+    hass: HomeAssistant, config_entry: MikrotikConfigEntry
+) -> None:
+    """Drop the entry's repair issues when it is deleted."""
+    for prefix in ("insecure_connection", "unverified_connection"):
+        ir.async_delete_issue(hass, DOMAIN, f"{prefix}_{config_entry.entry_id}")
+
+
+# ---------------------------
 #   async_remove_config_entry_device
 # ---------------------------
 async def async_remove_config_entry_device(
     hass, config_entry: MikrotikConfigEntry, device_entry: device_registry.DeviceEntry
 ) -> bool:
-    """Allow removing any device except the router itself."""
+    """Allow removing stale devices only.
+
+    The router and any device with a live entity would be recreated on the
+    next reload, losing the user's area and name, so they can't be removed.
+    """
     runtime_data = getattr(config_entry, "runtime_data", None)
-    return runtime_data is None or device_entry.id != runtime_data.router_device_id
+    if runtime_data is not None and device_entry.id == runtime_data.router_device_id:
+        return False
+
+    ent_reg = entity_registry.async_get(hass)
+    for entry in entity_registry.async_entries_for_device(
+        ent_reg, device_entry.id, include_disabled_entities=True
+    ):
+        if entry.config_entry_id != config_entry.entry_id:
+            continue
+        state = hass.states.get(entry.entity_id)
+        if state is not None and state.state != STATE_UNAVAILABLE:
+            return False
+
+    return True
 
 
 # ---------------------------
@@ -395,7 +584,7 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: MikrotikConfigE
     new_unique_id = config_entry.unique_id
 
     if new_version < 2:
-        new_data[CONF_VERIFY_SSL] = DEFAULT_VERIFY_SSL
+        new_data[CONF_VERIFY_SSL] = LEGACY_VERIFY_SSL
         new_version = 2
         new_minor_version = 1
 

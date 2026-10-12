@@ -43,6 +43,22 @@ _LOGGER = getLogger(__name__)
 
 
 def _skip_sensor(config_entry, entity_description, data, uid) -> bool:
+    # Diagnostic readings exist only for SFP ports with a module and for
+    # wireless clients
+    if entity_description.func == "MikrotikDiagnosticSensor":
+        if data[uid].get(entity_description.data_attribute) in (None, "", "unknown"):
+            return True
+        if entity_description.data_path == "host":
+            return not config_entry.options.get(CONF_TRACK_HOSTS, DEFAULT_TRACK_HOSTS)
+        return data[uid].get("sfp-module-present") in (
+            None,
+            False,
+            "",
+            "unknown",
+            "false",
+            "no",
+        )
+
     # Sensors
     if (
         entity_description.func == "MikrotikInterfaceTrafficSensor"
@@ -112,6 +128,9 @@ async def async_add_entities(
         coordinator = config_entry.runtime_data.data_coordinator
 
     known_unique_ids = set()
+    # (description, uid) pairs that already have an entity, so later
+    # polls skip building (and slugifying) an object just to discard it
+    added = set()
 
     @callback
     def async_update_controller():
@@ -134,6 +153,9 @@ async def async_add_entities(
                 uids = tuple(data)
 
             for uid in uids:
+                if (id(entity_description), uid) in added:
+                    continue
+
                 if uid is not None and _skip_sensor(
                     config_entry, entity_description, data, uid
                 ):
@@ -142,6 +164,7 @@ async def async_add_entities(
                 obj = dispatcher[entity_description.func](
                     coordinator, entity_description, uid
                 )
+                added.add((id(entity_description), uid))
                 if obj.unique_id in known_unique_ids:
                     continue
 
@@ -191,9 +214,15 @@ class MikrotikEntity(CoordinatorEntity[_MikrotikCoordinatorT], Entity):
         self._attr_name = self.custom_name
 
     async def async_run_routeros(self, target: Callable[..., bool], *args) -> None:
-        """Run a synchronous RouterOS command outside the event loop."""
+        """Run a synchronous RouterOS command outside the event loop.
+
+        Commands for one router run one at a time, so a burst of service calls
+        waits here instead of filling the shared executor with jobs that only
+        block on the API lock (M10).
+        """
         try:
-            result = await self.hass.async_add_executor_job(target, *args)
+            async with self.coordinator.command_lock:
+                result = await self.hass.async_add_executor_job(target, *args)
         except ApiEntryNotFound as error:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
@@ -301,10 +330,8 @@ class MikrotikEntity(CoordinatorEntity[_MikrotikCoordinatorT], Entity):
         router_device_id = self._config_entry.runtime_data.router_device_id
 
         if description.ha_group == "System":
-            serial_number = f"{data['routerboard']['serial-number']}"
             return DeviceInfo(
-                connections={(DOMAIN, serial_number)},
-                identifiers={(DOMAIN, serial_number)},
+                identifiers={self._config_entry.runtime_data.router_identifier}
             )
 
         if "mac-address" in description.data_reference:
@@ -340,7 +367,8 @@ class MikrotikEntity(CoordinatorEntity[_MikrotikCoordinatorT], Entity):
     @property
     def extra_state_attributes(self) -> Mapping[str, Any]:
         """Return the state attributes."""
-        attributes = super().extra_state_attributes
+        # A fresh dict, so attributes that left the data don't linger
+        attributes = dict(super().extra_state_attributes)
         for variable in self.entity_description.data_attributes_list:
             if variable in self._data:
                 attributes[format_attribute(variable)] = self._data[variable]

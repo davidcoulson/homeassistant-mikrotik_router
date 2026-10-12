@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from logging import getLogger
 from collections.abc import Mapping
-from datetime import timedelta
 from typing import Any
 
 from homeassistant.components.device_tracker import ScannerEntity
@@ -15,12 +14,10 @@ from homeassistant.util.dt import utcnow
 from .device_tracker_types import SENSOR_TYPES, SENSOR_SERVICES
 from .coordinator import MikrotikConfigEntry, MikrotikCoordinator
 from .entity import MikrotikEntity, async_add_entities
-from .helper import format_attribute
+from .helper import format_attribute, track_hosts_timeout
 from .const import (
     CONF_TRACK_HOSTS,
     DEFAULT_TRACK_HOSTS,
-    CONF_TRACK_HOSTS_TIMEOUT,
-    DEFAULT_TRACK_HOST_TIMEOUT,
 )
 
 _LOGGER = getLogger(__name__)
@@ -104,6 +101,10 @@ class MikrotikDeviceTracker(ScannerEntity, MikrotikEntity):
 class MikrotikHostDeviceTracker(MikrotikDeviceTracker):
     """Representation of a network device."""
 
+    # last-seen moves on every poll; keep it in the state but out of the
+    # recorder, so each update does not store a new attributes row
+    _unrecorded_attributes = frozenset({"last_seen"})
+
     @property
     def option_track_network_hosts(self):
         """Config entry option to not track ARP."""
@@ -112,10 +113,7 @@ class MikrotikHostDeviceTracker(MikrotikDeviceTracker):
     @property
     def option_track_network_hosts_timeout(self):
         """Config entry option scan interval."""
-        track_network_hosts_timeout = self._config_entry.options.get(
-            CONF_TRACK_HOSTS_TIMEOUT, DEFAULT_TRACK_HOST_TIMEOUT
-        )
-        return timedelta(seconds=track_network_hosts_timeout)
+        return track_hosts_timeout(self._config_entry.options)
 
     @property
     def is_connected(self) -> bool:

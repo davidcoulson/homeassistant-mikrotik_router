@@ -22,8 +22,11 @@ DEFAULT_HOST = "10.0.0.1"
 DEFAULT_USERNAME = "admin"
 DEFAULT_PORT = 0
 DEFAULT_DEVICE_NAME = "Mikrotik"
-DEFAULT_SSL = False
-DEFAULT_VERIFY_SSL = False
+# New entries use SSL with certificate verification (M1)
+DEFAULT_SSL = True
+DEFAULT_VERIFY_SSL = True
+# Entries created before verify_ssl existed never verified certificates
+LEGACY_VERIFY_SSL = False
 
 CONF_SCAN_INTERVAL = "scan_interval"
 DEFAULT_SCAN_INTERVAL = 30
@@ -35,6 +38,7 @@ CONF_TRACK_HOSTS = "track_network_hosts"
 DEFAULT_TRACK_HOSTS = False
 CONF_TRACK_HOSTS_TIMEOUT = "track_network_hosts_timeout"
 DEFAULT_TRACK_HOST_TIMEOUT = 180
+MAX_TRACK_HOST_TIMEOUT = 86400
 
 CONF_SENSOR_PORT_TRACKER = "sensor_port_tracker"
 DEFAULT_SENSOR_PORT_TRACKER = False

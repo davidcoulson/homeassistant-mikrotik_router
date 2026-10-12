@@ -21,6 +21,7 @@ from homeassistant.const import (
     UnitOfElectricCurrent,
     UnitOfPower,
     UnitOfRatio,
+    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
 )
 
 from .const import DOMAIN
@@ -54,12 +55,7 @@ DEVICE_ATTRIBUTES_IFACE_SFP = [
     "auto-negotiation",
     "advertising",
     "link-partner-advertising",
-    "sfp-temperature",
-    "sfp-supply-voltage",
     "sfp-module-present",
-    "sfp-tx-bias-current",
-    "sfp-tx-power",
-    "sfp-rx-power",
     "sfp-rx-loss",
     "sfp-tx-fault",
     "sfp-type",
@@ -587,7 +583,7 @@ SENSOR_TYPES: tuple[MikrotikSensorEntityDescription, ...] = (
         ha_connection=CONNECTION_NETWORK_MAC,
         ha_connection_value="data__port-mac-address",
         data_path="interface",
-        data_attribute="tx-current",
+        data_attribute="tx-total",
         data_name="default-name",
         data_uid="",
         data_reference="default-name",
@@ -608,7 +604,7 @@ SENSOR_TYPES: tuple[MikrotikSensorEntityDescription, ...] = (
         ha_connection=CONNECTION_NETWORK_MAC,
         ha_connection_value="data__port-mac-address",
         data_path="interface",
-        data_attribute="rx-current",
+        data_attribute="rx-total",
         data_name="default-name",
         data_uid="",
         data_reference="default-name",
@@ -758,6 +754,116 @@ SENSOR_TYPES: tuple[MikrotikSensorEntityDescription, ...] = (
         data_uid="name",
         data_reference="name",
     ),
+)
+
+# SFP DDM readings and wireless client signal change every poll. As
+# attributes they wrote a new attributes row (or state_changed event) each
+# time, so they are separate diagnostic sensors, disabled by default.
+SFP_DDM_SENSORS = (
+    (
+        "sfp_temperature",
+        "SFP temperature",
+        "sfp-temperature",
+        UnitOfTemperature.CELSIUS,
+        SensorDeviceClass.TEMPERATURE,
+    ),
+    (
+        "sfp_supply_voltage",
+        "SFP supply voltage",
+        "sfp-supply-voltage",
+        UnitOfElectricPotential.VOLT,
+        SensorDeviceClass.VOLTAGE,
+    ),
+    (
+        "sfp_tx_bias_current",
+        "SFP TX bias current",
+        "sfp-tx-bias-current",
+        UnitOfElectricCurrent.MILLIAMPERE,
+        SensorDeviceClass.CURRENT,
+    ),
+    (
+        "sfp_tx_power",
+        "SFP TX power",
+        "sfp-tx-power",
+        SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+        SensorDeviceClass.SIGNAL_STRENGTH,
+    ),
+    (
+        "sfp_rx_power",
+        "SFP RX power",
+        "sfp-rx-power",
+        SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+        SensorDeviceClass.SIGNAL_STRENGTH,
+    ),
+)
+
+WIRELESS_HOST_SENSORS = (
+    (
+        "host_signal_strength",
+        "Signal strength",
+        "signal-strength",
+        SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+        SensorDeviceClass.SIGNAL_STRENGTH,
+    ),
+    ("host_tx_ccq", "TX CCQ", "tx-ccq", UnitOfRatio.PERCENTAGE, None),
+    (
+        "host_tx_rate",
+        "TX rate",
+        "tx-rate",
+        UnitOfDataRate.MEGABITS_PER_SECOND,
+        SensorDeviceClass.DATA_RATE,
+    ),
+    (
+        "host_rx_rate",
+        "RX rate",
+        "rx-rate",
+        UnitOfDataRate.MEGABITS_PER_SECOND,
+        SensorDeviceClass.DATA_RATE,
+    ),
+)
+
+SENSOR_TYPES += tuple(
+    MikrotikSensorEntityDescription(
+        key=key,
+        name=name,
+        native_unit_of_measurement=unit,
+        suggested_display_precision=1,
+        device_class=device_class,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        ha_group="data__default-name",
+        ha_connection=CONNECTION_NETWORK_MAC,
+        ha_connection_value="data__port-mac-address",
+        data_path="interface",
+        data_attribute=attribute,
+        data_name="default-name",
+        data_uid="",
+        data_reference="default-name",
+        func="MikrotikDiagnosticSensor",
+    )
+    for key, name, attribute, unit, device_class in SFP_DDM_SENSORS
+) + tuple(
+    MikrotikSensorEntityDescription(
+        key=key,
+        name=name,
+        native_unit_of_measurement=unit,
+        suggested_display_precision=0,
+        device_class=device_class,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        ha_group="",
+        ha_connection=CONNECTION_NETWORK_MAC,
+        ha_connection_value="data__mac-address",
+        data_path="host",
+        data_attribute=attribute,
+        data_name="host-name",
+        data_uid="mac-address",
+        data_reference="mac-address",
+        func="MikrotikDiagnosticSensor",
+    )
+    for key, name, attribute, unit, device_class in WIRELESS_HOST_SENSORS
 )
 
 SENSOR_SERVICES = []
