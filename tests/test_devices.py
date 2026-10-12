@@ -314,6 +314,7 @@ def test_device_info_links_to_router(description) -> None:
     coordinator.config_entry.entry_id = entry_id
     coordinator.config_entry.data = {CONF_NAME: "Mikrotik"}
     coordinator.config_entry.runtime_data.router_device_id = router_device_id
+    coordinator.config_entry.runtime_data.router_identifier = (DOMAIN, SERIAL)
 
     device_info = MikrotikEntity(coordinator, description, uid).device_info
 

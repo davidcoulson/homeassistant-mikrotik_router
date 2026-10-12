@@ -301,10 +301,8 @@ class MikrotikEntity(CoordinatorEntity[_MikrotikCoordinatorT], Entity):
         router_device_id = self._config_entry.runtime_data.router_device_id
 
         if description.ha_group == "System":
-            serial_number = f"{data['routerboard']['serial-number']}"
             return DeviceInfo(
-                connections={(DOMAIN, serial_number)},
-                identifiers={(DOMAIN, serial_number)},
+                identifiers={self._config_entry.runtime_data.router_identifier}
             )
 
         if "mac-address" in description.data_reference:

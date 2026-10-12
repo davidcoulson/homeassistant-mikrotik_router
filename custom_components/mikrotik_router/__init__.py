@@ -37,7 +37,11 @@ from .coordinator import (
     MikrotikCoordinator,
     MikrotikTrackerCoordinator,
 )
-from .helper import child_device_identifier, router_unique_id
+from .helper import (
+    INVALID_ROUTER_IDENTIFIERS,
+    child_device_identifier,
+    router_unique_id,
+)
 from .binary_sensor_types import SENSOR_TYPES as BINARY_SENSOR_TYPES
 from .button_types import SENSOR_TYPES as BUTTON_TYPES
 from .sensor_types import SENSOR_TYPES as SENSOR_PLATFORM_TYPES
@@ -121,7 +125,9 @@ async def async_setup_entry(
     config_entry.async_on_unload(_async_close_apis)
     await coordinator.async_config_entry_first_refresh()
     _async_update_router_unique_id(hass, config_entry, coordinator)
-    router_device_id = _async_setup_router_device(hass, config_entry, coordinator)
+    router_device_id, router_identifier = _async_setup_router_device(
+        hass, config_entry, coordinator
+    )
     _async_migrate_child_devices(hass, config_entry, coordinator, router_device_id)
     coordinatorTracker = MikrotikTrackerCoordinator(hass, config_entry, coordinator)
     apis.append(coordinatorTracker.api)
@@ -130,6 +136,7 @@ async def async_setup_entry(
         data_coordinator=coordinator,
         tracker_coordinator=coordinatorTracker,
         router_device_id=router_device_id,
+        router_identifier=router_identifier,
     )
 
     await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
@@ -180,21 +187,77 @@ def _async_check_connection_security(
 
 
 # ---------------------------
+#   _async_router_identifier
+# ---------------------------
+@callback
+def _async_router_identifier(
+    hass: HomeAssistant,
+    config_entry: MikrotikConfigEntry,
+    coordinator: MikrotikCoordinator,
+) -> tuple[str, str]:
+    """Return the router device identifier, migrating placeholder serials.
+
+    RouterBOARDs keep their serial number as identifier. CHR/x86 report the
+    serial as "N/A" and some boards hide it, so such routers registered a
+    (DOMAIN, "N/A") or (DOMAIN, "unknown") device, shared between entries on
+    older HA releases. They now use the config entry ID.
+    """
+    serial_number = f"{coordinator.data['routerboard']['serial-number']}"
+    if serial_number.strip().casefold() not in INVALID_ROUTER_IDENTIFIERS:
+        return (DOMAIN, serial_number)
+
+    fallback = (DOMAIN, config_entry.entry_id)
+    registry = device_registry.async_get(hass)
+    for device in device_registry.async_entries_for_config_entry(
+        registry, config_entry.entry_id
+    ):
+        router_ids = {
+            value
+            for domain, value in device.identifiers
+            if domain == DOMAIN and not value.startswith(f"{config_entry.entry_id}-")
+        }
+        if not router_ids or fallback[1] in router_ids:
+            continue
+
+        if any(
+            value.strip().casefold() not in INVALID_ROUTER_IDENTIFIERS
+            for value in router_ids
+        ):
+            # A real serial is registered, but this poll couldn't read it:
+            # keep using the existing device.
+            return (DOMAIN, sorted(router_ids)[0])
+
+        # Re-key the placeholder device in place, so its ID, area, name and
+        # children stay the same.
+        registry.async_update_device(
+            device.id,
+            new_identifiers={fallback},
+            new_connections={
+                connection
+                for connection in device.connections
+                if connection[0] != DOMAIN
+            },
+        )
+        break
+
+    return fallback
+
+
+# ---------------------------
 #   _async_setup_router_device
 # ---------------------------
 def _async_setup_router_device(
     hass: HomeAssistant,
     config_entry: MikrotikConfigEntry,
     coordinator: MikrotikCoordinator,
-) -> str:
+) -> tuple[str, tuple[str, str]]:
     """Set up the router device before its child devices."""
-    serial_number = f"{coordinator.data['routerboard']['serial-number']}"
-    protocol = "https" if config_entry.data[CONF_SSL] else "http"
     registry = device_registry.async_get(hass)
+    identifier = _async_router_identifier(hass, config_entry, coordinator)
+    protocol = "https" if config_entry.data[CONF_SSL] else "http"
     device = registry.async_get_or_create(
         config_entry_id=config_entry.entry_id,
-        connections={(DOMAIN, serial_number)},
-        identifiers={(DOMAIN, serial_number)},
+        identifiers={identifier},
         name=f"{config_entry.data[CONF_NAME]} {coordinator.data['resource']['board-name']}",
         model=f"{coordinator.data['resource']['board-name']}",
         manufacturer=f"{coordinator.data['resource']['platform']}",
@@ -214,7 +277,7 @@ def _async_setup_router_device(
             registry.async_update_device(device_id, sw_version=f"{version}")
 
     config_entry.async_on_unload(coordinator.async_add_listener(_async_update_sw_version))
-    return device_id
+    return device_id, identifier
 
 
 # ---------------------------

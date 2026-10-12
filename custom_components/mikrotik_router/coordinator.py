@@ -92,6 +92,7 @@ class MikrotikData:
     data_coordinator: MikrotikCoordinator
     tracker_coordinator: MikrotikTrackerCoordinator
     router_device_id: str
+    router_identifier: tuple[str, str] | None = None
 
 
 type MikrotikConfigEntry = ConfigEntry[MikrotikData]
