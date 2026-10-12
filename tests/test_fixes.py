@@ -133,3 +133,16 @@ async def test_fetch_changelogs_prereleases():
     session.requested.clear()
     assert await fetch_changelogs(session, "7.19", "7.20rc2") == ["- 7.20rc2"]
     assert session.requested == ["7.20rc2"]
+
+
+def test_routerboard_update_without_firmware_keys() -> None:
+    """Item 25: missing firmware keys must not raise."""
+    from custom_components.mikrotik_router.update import MikrotikRouterBoardFWUpdate
+
+    entity = object.__new__(MikrotikRouterBoardFWUpdate)
+    entity._data = {"model": "RB5009"}
+    assert entity.installed_version is None
+    assert entity.latest_version is None
+    assert entity.is_on is False
+    entity._data = {"current-firmware": "7.15", "upgrade-firmware": "7.16"}
+    assert entity.is_on is True
