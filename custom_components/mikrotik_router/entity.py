@@ -6,11 +6,15 @@ from collections.abc import Mapping
 from logging import getLogger
 from typing import Any, Callable, TypeVar
 
-from homeassistant.const import ATTR_ATTRIBUTION, CONF_NAME, CONF_HOST, CONF_SSL
+from homeassistant.const import ATTR_ATTRIBUTION, CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
-from homeassistant.helpers import device_registry
-from homeassistant.helpers.entity import DeviceInfo, Entity
+from homeassistant.helpers.device_registry import (
+    CONNECTION_NETWORK_MAC,
+    ChildDeviceInfo,
+    DeviceInfo,
+)
+from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import slugify
@@ -33,7 +37,7 @@ from .coordinator import (
     MikrotikTrackerCoordinator,
 )
 from .exceptions import ApiEntryNotFound
-from .helper import format_attribute
+from .helper import child_device_identifier, format_attribute
 
 _LOGGER = getLogger(__name__)
 
@@ -285,78 +289,53 @@ class MikrotikEntity(CoordinatorEntity[_MikrotikCoordinatorT], Entity):
         return f"{self._inst.lower()}-{self.entity_description.key}"
 
     @property
-    def device_info(self) -> DeviceInfo:
-        """Return a description for device registry."""
-        dev_connection = DOMAIN
-        dev_connection_value = self.entity_description.data_reference
-        dev_group = self.entity_description.ha_group
-        if self.entity_description.ha_group == "System":
-            dev_group = self.coordinator.data["resource"]["board-name"]
-            dev_connection_value = self.coordinator.data["routerboard"]["serial-number"]
+    def device_info(self) -> DeviceInfo | ChildDeviceInfo:
+        """Return a description for device registry.
 
-        if self.entity_description.ha_group.startswith("data__"):
-            dev_group = self.entity_description.ha_group[6:]
-            if dev_group in self._data:
-                dev_group = self._data[dev_group]
-                dev_connection_value = dev_group
+        System entities belong to the router device. Network clients are separate
+        devices connected via the router. Everything else (interfaces, firewall
+        rules, queues, scripts, ...) is a child device of the router device.
+        """
+        description = self.entity_description
+        data = self.coordinator.data
+        router_device_id = self._config_entry.runtime_data.router_device_id
 
-        if self.entity_description.ha_connection:
-            dev_connection = self.entity_description.ha_connection
-
-        if self.entity_description.ha_connection_value:
-            dev_connection_value = self.entity_description.ha_connection_value
-            if dev_connection_value.startswith("data__"):
-                dev_connection_value = dev_connection_value[6:]
-                dev_connection_value = self._data[dev_connection_value]
-
-        if self.entity_description.ha_group == "System":
-            protocol = (
-                "https" if self.coordinator.config_entry.data[CONF_SSL] else "http"
-            )
+        if description.ha_group == "System":
+            serial_number = f"{data['routerboard']['serial-number']}"
             return DeviceInfo(
-                connections={(dev_connection, f"{dev_connection_value}")},
-                identifiers={(dev_connection, f"{dev_connection_value}")},
-                name=f"{self._inst} {dev_group}",
-                model=f"{self.coordinator.data['resource']['board-name']}",
-                manufacturer=f"{self.coordinator.data['resource']['platform']}",
-                sw_version=f"{self.coordinator.data['resource']['version']}",
-                configuration_url=f"{protocol}://{self.coordinator.config_entry.data[CONF_HOST]}",
+                connections={(DOMAIN, serial_number)},
+                identifiers={(DOMAIN, serial_number)},
             )
 
-        via_device_id = device_registry.async_get_device_id_by_identifier(
-            self.hass,
-            (
-                DOMAIN,
-                f"{self.coordinator.data['routerboard']['serial-number']}",
-            ),
-            config_entry_id=self._config_entry.entry_id,
-        )
-
-        if "mac-address" in self.entity_description.data_reference:
-            dev_group = self._data[self.entity_description.data_name]
-            dev_manufacturer = ""
-            if dev_connection_value in self.coordinator.data["host"]:
-                dev_group = self.coordinator.data["host"][dev_connection_value][
-                    "host-name"
-                ]
-                dev_manufacturer = self.coordinator.data["host"][dev_connection_value][
-                    "manufacturer"
-                ]
+        if "mac-address" in description.data_reference:
+            mac_address = self._data[description.data_reference]
+            name = self._data[description.data_name]
+            manufacturer = ""
+            if host := data["host"].get(mac_address):
+                name = host["host-name"]
+                manufacturer = host["manufacturer"]
 
             return DeviceInfo(
-                connections={(dev_connection, f"{dev_connection_value}")},
-                name=f"{dev_group}",
-                manufacturer=f"{dev_manufacturer}",
-                via_device_id=via_device_id,
+                connections={(CONNECTION_NETWORK_MAC, mac_address)},
+                name=f"{name}",
+                manufacturer=f"{manufacturer}",
+                via_device_id=router_device_id,
+            )
+
+        if description.ha_group.startswith("data__"):
+            name = f"{self._data[description.ha_group[6:]]}"
+            identifier = child_device_identifier(
+                self._config_entry.entry_id, description.data_path, name
             )
         else:
-            return DeviceInfo(
-                connections={(dev_connection, f"{dev_connection_value}")},
-                name=f"{self._inst} {dev_group}",
-                model=f"{self.coordinator.data['resource']['board-name']}",
-                manufacturer=f"{self.coordinator.data['resource']['platform']}",
-                via_device_id=via_device_id,
-            )
+            name = description.ha_group
+            identifier = child_device_identifier(self._config_entry.entry_id, name)
+
+        return ChildDeviceInfo(
+            identifiers={identifier},
+            name=name,
+            parent_device_id=router_device_id,
+        )
 
     @property
     def extra_state_attributes(self) -> Mapping[str, Any]:

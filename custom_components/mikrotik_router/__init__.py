@@ -12,7 +12,7 @@ from homeassistant.components.sensor import (
     DOMAIN as SENSOR_DOMAIN,
     SensorDeviceClass,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv, service
 from homeassistant.helpers import device_registry, entity_registry
 from homeassistant.helpers.typing import ConfigType
@@ -36,7 +36,11 @@ from .coordinator import (
     MikrotikCoordinator,
     MikrotikTrackerCoordinator,
 )
-from .helper import router_unique_id
+from .helper import child_device_identifier, router_unique_id
+from .binary_sensor_types import SENSOR_TYPES as BINARY_SENSOR_TYPES
+from .button_types import SENSOR_TYPES as BUTTON_TYPES
+from .sensor_types import SENSOR_TYPES as SENSOR_PLATFORM_TYPES
+from .switch_types import SENSOR_TYPES as SWITCH_TYPES
 from .binary_sensor_types import SENSOR_SERVICES as BINARY_SENSOR_SERVICES
 from .button_types import SENSOR_SERVICES as BUTTON_SERVICES
 from .device_tracker_types import SENSOR_SERVICES as DEVICE_TRACKER_SERVICES
@@ -55,6 +59,19 @@ ENTITY_SERVICES = {
     Platform.SENSOR: SENSOR_PLATFORM_SERVICES,
     Platform.SWITCH: SWITCH_SERVICES,
     Platform.UPDATE: UPDATE_SERVICES,
+}
+
+STATIC_CHILD_GROUPS = {
+    description.ha_group
+    for description in (
+        *BINARY_SENSOR_TYPES,
+        *BUTTON_TYPES,
+        *SENSOR_PLATFORM_TYPES,
+        *SWITCH_TYPES,
+    )
+    if description.ha_group
+    and description.ha_group != "System"
+    and not description.ha_group.startswith("data__")
 }
 
 _LOGGER = logging.getLogger(__name__)
@@ -94,12 +111,14 @@ async def async_setup_entry(
     coordinator = MikrotikCoordinator(hass, config_entry)
     await coordinator.async_config_entry_first_refresh()
     _async_update_router_unique_id(hass, config_entry, coordinator)
-    _async_setup_router_device(hass, config_entry, coordinator)
+    router_device_id = _async_setup_router_device(hass, config_entry, coordinator)
+    _async_migrate_child_devices(hass, config_entry, coordinator, router_device_id)
     coordinatorTracker = MikrotikTrackerCoordinator(hass, config_entry, coordinator)
     await coordinatorTracker.async_config_entry_first_refresh()
     config_entry.runtime_data = MikrotikData(
         data_coordinator=coordinator,
         tracker_coordinator=coordinatorTracker,
+        router_device_id=router_device_id,
     )
 
     await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
@@ -116,11 +135,12 @@ def _async_setup_router_device(
     hass: HomeAssistant,
     config_entry: MikrotikConfigEntry,
     coordinator: MikrotikCoordinator,
-) -> None:
+) -> str:
     """Set up the router device before its child devices."""
     serial_number = f"{coordinator.data['routerboard']['serial-number']}"
     protocol = "https" if config_entry.data[CONF_SSL] else "http"
-    device_registry.async_get(hass).async_get_or_create(
+    registry = device_registry.async_get(hass)
+    device = registry.async_get_or_create(
         config_entry_id=config_entry.entry_id,
         connections={(DOMAIN, serial_number)},
         identifiers={(DOMAIN, serial_number)},
@@ -130,6 +150,65 @@ def _async_setup_router_device(
         sw_version=f"{coordinator.data['resource']['version']}",
         configuration_url=f"{protocol}://{config_entry.data[CONF_HOST]}",
     )
+    device_id = device.id
+
+    @callback
+    def _async_update_sw_version() -> None:
+        """Keep the router firmware version current after RouterOS upgrades."""
+        version = (coordinator.data or {}).get("resource", {}).get("version")
+        if not version:
+            return
+        router = registry.async_get(device_id)
+        if router is not None and router.sw_version != f"{version}":
+            registry.async_update_device(device_id, sw_version=f"{version}")
+
+    config_entry.async_on_unload(coordinator.async_add_listener(_async_update_sw_version))
+    return device_id
+
+
+# ---------------------------
+#   _async_migrate_child_devices
+# ---------------------------
+def _async_migrate_child_devices(
+    hass: HomeAssistant,
+    config_entry: MikrotikConfigEntry,
+    coordinator: MikrotikCoordinator,
+    router_device_id: str,
+) -> None:
+    """Tag legacy per-group devices so they convert to child devices in place.
+
+    Older versions registered interfaces and rule groups as standalone devices
+    keyed only by connections. Adding the child identifiers lets the device
+    registry convert them on entity setup, keeping their ids, areas and names.
+    """
+    entry_id = config_entry.entry_id
+    by_connection: dict[tuple[str, str], tuple[str, str]] = {
+        (DOMAIN, group): child_device_identifier(entry_id, group)
+        for group in STATIC_CHILD_GROUPS
+    }
+    for interface in coordinator.data.get("interface", {}).values():
+        if not interface.get("port-mac-address") or not interface.get("default-name"):
+            continue
+        by_connection[
+            (
+                device_registry.CONNECTION_NETWORK_MAC,
+                device_registry.format_mac(interface["port-mac-address"]),
+            )
+        ] = child_device_identifier(entry_id, "interface", interface["default-name"])
+
+    registry = device_registry.async_get(hass)
+    for device in device_registry.async_entries_for_config_entry(registry, entry_id):
+        if device.id == router_device_id:
+            continue
+        identifiers = {
+            by_connection[connection]
+            for connection in device.connections
+            if connection in by_connection
+        }
+        if len(identifiers) == 1 and not identifiers <= device.identifiers:
+            registry.async_update_device(
+                device.id, new_identifiers=device.identifiers | identifiers
+            )
 
 
 # ---------------------------
