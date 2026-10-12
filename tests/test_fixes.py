@@ -94,3 +94,27 @@ async def test_configured_instances_ignores_case(hass):
 
     MockConfigEntry(domain=DOMAIN, data={"name": "Office"}).add_to_hass(hass)
     assert "office" in configured_instances(hass)
+
+
+def test_extra_attributes_do_not_linger() -> None:
+    """L5: attributes that leave the data are dropped."""
+    from unittest.mock import MagicMock
+
+    from custom_components.mikrotik_router.entity import MikrotikEntity
+    from custom_components.mikrotik_router.switch_types import SENSOR_TYPES
+
+    description = next(d for d in SENSOR_TYPES if d.key == "nat")
+    row = {
+        ".id": "*1",
+        "name": "tcp:443",
+        "comment": "",
+        "enabled": True,
+        "dst-port": "443",
+    }
+    coordinator = MagicMock()
+    coordinator.data = {"nat": {"*1": row}}
+    coordinator.config_entry.data = {"name": "Mikrotik"}
+    entity = MikrotikEntity(coordinator, description, "*1")
+    assert entity.extra_state_attributes["dst_port"] == "443"
+    del row["dst-port"]
+    assert "dst_port" not in entity.extra_state_attributes

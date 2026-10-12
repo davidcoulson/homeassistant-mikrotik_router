@@ -338,7 +338,8 @@ class MikrotikEntity(CoordinatorEntity[_MikrotikCoordinatorT], Entity):
     @property
     def extra_state_attributes(self) -> Mapping[str, Any]:
         """Return the state attributes."""
-        attributes = super().extra_state_attributes
+        # A fresh dict, so attributes that left the data don't linger
+        attributes = dict(super().extra_state_attributes)
         for variable in self.entity_description.data_attributes_list:
             if variable in self._data:
                 attributes[format_attribute(variable)] = self._data[variable]
