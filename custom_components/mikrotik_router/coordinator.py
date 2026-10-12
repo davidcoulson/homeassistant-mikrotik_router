@@ -81,6 +81,29 @@ def is_valid_ip(address):
         return False
 
 
+def _split_pair(value, convert, default=0) -> tuple:
+    """Split an upload/download pair such as "1000/2000".
+
+    Unexpected formats give the default instead of failing the poll.
+    """
+    parts = str(value).split("/")
+    if len(parts) != 2:
+        return default, default
+    try:
+        return convert(parts[0]), convert(parts[1])
+    except ValueError:
+        return default, default
+
+
+def _address_in_networks(address, networks) -> bool:
+    """Return True if the address is in one of the networks."""
+    try:
+        address = ip_address(address)
+    except ValueError:
+        return False
+    return any(address in network for network in networks)
+
+
 def utc_from_timestamp(timestamp: float) -> datetime:
     """Return a UTC time from a timestamp."""
     return datetime.fromtimestamp(timestamp, tz=UTC)
@@ -810,10 +833,11 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
     def get_interface(self) -> None:
         """Get all interfaces data from Mikrotik"""
         interface_traffic_current_run = monotonic()
+        interfaces = self.api.query("/interface")
         self.ds["interface"] = parse_api(
             data=self.ds["interface"],
             prune=True,
-            source=self.api.query("/interface"),
+            source=interfaces,
             key="default-name",
             key_secondary="name",
             vals=[
@@ -860,7 +884,13 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             ],
         )
 
-        if self.option_sensor_port_traffic and self.api.connected():
+        # Only advance the traffic timer when the counters were read, or the
+        # next poll would divide two intervals of bytes by one of time.
+        if (
+            self.option_sensor_port_traffic
+            and interfaces is not None
+            and self.api.connected()
+        ):
             time_diff = 0
             if self.interface_traffic_last_run is not None:
                 time_diff = (
@@ -1833,49 +1863,20 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         for uid, vals in self.ds["queue"].items():
             self.ds["queue"][uid]["comment"] = str(self.ds["queue"][uid]["comment"])
 
-            upload_max_limit_bps, download_max_limit_bps = [
-                int(x) for x in vals["max-limit"].split("/")
-            ]
-            self.ds["queue"][uid]["upload-max-limit"] = f"{upload_max_limit_bps} bps"
-            self.ds["queue"][uid][
-                "download-max-limit"
-            ] = f"{download_max_limit_bps} bps"
+            for source in (
+                "max-limit",
+                "rate",
+                "limit-at",
+                "burst-limit",
+                "burst-threshold",
+            ):
+                upload, download = _split_pair(vals[source], int)
+                vals[f"upload-{source}"] = f"{upload} bps"
+                vals[f"download-{source}"] = f"{download} bps"
 
-            upload_rate_bps, download_rate_bps = [
-                int(x) for x in vals["rate"].split("/")
-            ]
-            self.ds["queue"][uid]["upload-rate"] = f"{upload_rate_bps} bps"
-            self.ds["queue"][uid]["download-rate"] = f"{download_rate_bps} bps"
-
-            upload_limit_at_bps, download_limit_at_bps = [
-                int(x) for x in vals["limit-at"].split("/")
-            ]
-            self.ds["queue"][uid]["upload-limit-at"] = f"{upload_limit_at_bps} bps"
-            self.ds["queue"][uid]["download-limit-at"] = f"{download_limit_at_bps} bps"
-
-            upload_burst_limit_bps, download_burst_limit_bps = [
-                int(x) for x in vals["burst-limit"].split("/")
-            ]
-            self.ds["queue"][uid][
-                "upload-burst-limit"
-            ] = f"{upload_burst_limit_bps} bps"
-            self.ds["queue"][uid][
-                "download-burst-limit"
-            ] = f"{download_burst_limit_bps} bps"
-
-            upload_burst_threshold_bps, download_burst_threshold_bps = [
-                int(x) for x in vals["burst-threshold"].split("/")
-            ]
-            self.ds["queue"][uid][
-                "upload-burst-threshold"
-            ] = f"{upload_burst_threshold_bps} bps"
-            self.ds["queue"][uid][
-                "download-burst-threshold"
-            ] = f"{download_burst_threshold_bps} bps"
-
-            upload_burst_time, download_burst_time = vals["burst-time"].split("/")
-            self.ds["queue"][uid]["upload-burst-time"] = upload_burst_time
-            self.ds["queue"][uid]["download-burst-time"] = download_burst_time
+            upload, download = _split_pair(vals["burst-time"], str, "0s")
+            vals["upload-burst-time"] = upload
+            vals["download-burst-time"] = download
 
     # ---------------------------
     #   get_arp
@@ -2052,9 +2053,12 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
 
         for uid, vals in self.ds["dhcp-network"].items():
             if vals["IPv4Network"] == "":
-                self.ds["dhcp-network"][uid]["IPv4Network"] = IPv4Network(
-                    vals["address"]
-                )
+                try:
+                    self.ds["dhcp-network"][uid]["IPv4Network"] = IPv4Network(
+                        vals["address"], strict=False
+                    )
+                except ValueError:
+                    self.ds["dhcp-network"][uid]["IPv4Network"] = None
 
     # ---------------------------
     #   get_capsman_hosts
@@ -2079,9 +2083,10 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Get wireless data from Mikrotik"""
         self.ds["wireless"] = {}
         for wifimodule in self._wifimodules:
+            # The table starts empty each poll; pruning here would drop the
+            # interfaces of the previous wifi module.
             self.ds["wireless"] = parse_api(
                 data=self.ds["wireless"],
-                prune=True,
                 source=self.api.query(f"/interface/{wifimodule}", ignore_trap=True),
                 key="name",
                 vals=[
@@ -2113,12 +2118,13 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             )
 
         for uid in self.ds["wireless"]:
-            if self.ds["wireless"][uid]["master-interface"]:
+            master = self.ds["wireless"].get(
+                self.ds["wireless"][uid]["master-interface"]
+            )
+            if master:
                 for tmp in self.ds["wireless"][uid]:
                     if self.ds["wireless"][uid][tmp] == "unknown":
-                        self.ds["wireless"][uid][tmp] = self.ds["wireless"][
-                            self.ds["wireless"][uid]["master-interface"]
-                        ][tmp]
+                        self.ds["wireless"][uid][tmp] = master.get(tmp, "unknown")
 
             if uid in self.ds["interface"]:
                 for tmp in self.ds["wireless"][uid]:
@@ -2398,30 +2404,26 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             local_traffic_enabled,
         ) = self.api.is_accounting_and_local_traffic_enabled()
 
-        # Build missing hosts from main hosts dict
-        for uid, vals in self.ds["host"].items():
-            if uid not in self.ds["client_traffic"]:
-                self.ds["client_traffic"][uid] = {
-                    "address": vals["address"],
-                    "mac-address": vals["mac-address"],
-                    "host-name": vals["host-name"],
-                    "available": False,
-                    "local_accounting": False,
-                }
+        self._sync_client_traffic_hosts(
+            {"available": False, "local_accounting": False}
+        )
 
         _LOGGER.debug(
             f"Working with {len(self.ds['client_traffic'])} accounting devices"
         )
 
-        # Build temp accounting values dict with ip address as key
+        # Per-IP totals; addresses shared by several hosts (such as
+        # "unknown") cannot be attributed and are left out.
+        uid_by_ip = {}
+        for uid, vals in self.ds["client_traffic"].items():
+            addr = vals.get("address")
+            if not is_valid_ip(addr):
+                continue
+            uid_by_ip[addr] = None if addr in uid_by_ip else uid
         tmp_accounting_values = {
-            vals["address"]: {
-                "wan-tx": 0,
-                "wan-rx": 0,
-                "lan-tx": 0,
-                "lan-rx": 0,
-            }
-            for uid, vals in self.ds["client_traffic"].items()
+            addr: {"wan-tx": 0, "wan-rx": 0, "lan-tx": 0, "lan-rx": 0}
+            for addr, uid in uid_by_ip.items()
+            if uid
         }
 
         time_diff = self.api.take_client_traffic_snapshot(True)
@@ -2438,8 +2440,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 ],
             )
 
-            accounting_settings = self.api.query("/ip/accounting") or [{}]
-            threshold = int(accounting_settings[0].get("threshold") or 0)
+            threshold = self.api.accounting_threshold
             entry_count = len(accounting_data)
 
             if not threshold:
@@ -2458,47 +2459,44 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                     " increasing the accounting threshold value in Mikrotik."
                 )
 
+            networks = [
+                vals["IPv4Network"]
+                for vals in self.ds["dhcp-network"].values()
+                if vals.get("IPv4Network")
+            ]
             for item in accounting_data.values():
                 source_ip = str(item.get("src-address")).strip()
                 destination_ip = str(item.get("dst-address")).strip()
-                bits_count = int(str(item.get("bytes")).strip())
+                try:
+                    bits_count = int(str(item.get("bytes")).strip())
+                except ValueError:
+                    continue
 
-                if self._address_part_of_local_network(
-                    source_ip
-                ) and self._address_part_of_local_network(destination_ip):
+                source_local = _address_in_networks(source_ip, networks)
+                destination_local = _address_in_networks(destination_ip, networks)
+                if source_local and destination_local:
                     # LAN TX/RX
                     if source_ip in tmp_accounting_values:
                         tmp_accounting_values[source_ip]["lan-tx"] += bits_count
                     if destination_ip in tmp_accounting_values:
                         tmp_accounting_values[destination_ip]["lan-rx"] += bits_count
-                elif self._address_part_of_local_network(
-                    source_ip
-                ) and not self._address_part_of_local_network(destination_ip):
+                elif source_local:
                     # WAN TX
                     if source_ip in tmp_accounting_values:
                         tmp_accounting_values[source_ip]["wan-tx"] += bits_count
-                elif (
-                    not self._address_part_of_local_network(source_ip)
-                    and self._address_part_of_local_network(destination_ip)
-                    and destination_ip in tmp_accounting_values
-                ):
+                elif destination_local and destination_ip in tmp_accounting_values:
                     # WAN RX
                     tmp_accounting_values[destination_ip]["wan-rx"] += bits_count
 
         # Calculate real throughput and transform it to appropriate unit
         # Also handle availability of accounting and local_accounting from Mikrotik
         for addr, vals in tmp_accounting_values.items():
-            uid = self._get_accounting_uid_by_ip(addr)
-            if not uid:
-                _LOGGER.warning(
-                    f"Address {addr} not found in accounting data, skipping update"
-                )
-                continue
+            uid = uid_by_ip[addr]
 
             self.ds["client_traffic"][uid]["available"] = accounting_enabled
             self.ds["client_traffic"][uid]["local_accounting"] = local_traffic_enabled
 
-            if not accounting_enabled:
+            if not accounting_enabled or not time_diff:
                 # Skip calculation for WAN and LAN if accounting is disabled
                 continue
 
@@ -2521,23 +2519,24 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             )
 
     # ---------------------------
-    #   _address_part_of_local_network
+    #   _sync_client_traffic_hosts
     # ---------------------------
-    def _address_part_of_local_network(self, address) -> bool:
-        address = ip_address(address)
-        for vals in self.ds["dhcp-network"].values():
-            if address in vals["IPv4Network"]:
-                return True
-        return False
+    def _sync_client_traffic_hosts(self, defaults) -> None:
+        """Add new hosts to client_traffic and refresh their address and name.
 
-    # ---------------------------
-    #   _get_accounting_uid_by_ip
-    # ---------------------------
-    def _get_accounting_uid_by_ip(self, requested_ip):
-        for mac, vals in self.ds["client_traffic"].items():
-            if vals.get("address") is requested_ip:
-                return mac
-        return None
+        Traffic is matched by IP, so a stale address would attribute it to
+        whichever host got that address from DHCP since.
+        """
+        for uid, vals in list(self.ds["host"].items()):
+            if uid not in self.ds["client_traffic"]:
+                self.ds["client_traffic"][uid] = dict(defaults)
+            self.ds["client_traffic"][uid].update(
+                {
+                    "address": vals.get("address", "unknown"),
+                    "mac-address": vals.get("mac-address", uid),
+                    "host-name": vals.get("host-name", "unknown"),
+                }
+            )
 
     # ---------------------------
     #   _get_iface_from_entry
@@ -2558,20 +2557,16 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
     def process_kid_control_devices(self) -> None:
         """Get Kid Control Device data from Mikrotik"""
 
-        # Build missing hosts from main hosts dict
-        for uid, vals in self.ds["host"].items():
-            if uid not in self.ds["client_traffic"]:
-                self.ds["client_traffic"][uid] = {
-                    "address": vals["address"],
-                    "mac-address": vals["mac-address"],
-                    "host-name": vals["host-name"],
-                    "previous-bytes-up": 0.0,
-                    "previous-bytes-down": 0.0,
-                    "tx": 0.0,
-                    "rx": 0.0,
-                    "available": False,
-                    "local_accounting": False,
-                }
+        self._sync_client_traffic_hosts(
+            {
+                "previous-bytes-up": 0.0,
+                "previous-bytes-down": 0.0,
+                "tx": 0.0,
+                "rx": 0.0,
+                "available": False,
+                "local_accounting": False,
+            }
+        )
 
         _LOGGER.debug(
             f"Working with {len(self.ds['client_traffic'])} kid control devices"
@@ -2583,8 +2578,8 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             key="mac-address",
             vals=[
                 {"name": "mac-address"},
-                {"name": "bytes-down"},
-                {"name": "bytes-up"},
+                {"name": "bytes-down", "default": 0},
+                {"name": "bytes-up", "default": 0},
                 {
                     "name": "enabled",
                     "source": "disabled",

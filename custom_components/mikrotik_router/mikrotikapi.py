@@ -56,6 +56,7 @@ class MikrotikAPI:
 
         self._connection = None
         self._closed = False
+        self.accounting_threshold = 0
         self._connected = False
         self._reconnected = True
         self._connection_epoch = 0
@@ -609,6 +610,12 @@ class MikrotikAPI:
         response = self.query("/ip/accounting")
         if response is None:
             return False, False
+
+        # Kept for process_accounting, so it need not read the path again
+        try:
+            self.accounting_threshold = int(response[0].get("threshold") or 0)
+        except (IndexError, TypeError, ValueError):
+            self.accounting_threshold = 0
 
         for item in response:
             if "enabled" not in item:
