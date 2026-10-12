@@ -38,3 +38,19 @@ def test_get_uid_falls_back_to_secondary_key():
     assert apiparser.get_uid({"name": "n", "id": "x"}, "name", "id", None, None) == "n"
     assert apiparser.get_uid({"name": ""}, "name", None, None, None) is None
     assert apiparser.get_uid({"id": ""}, "name", "id", None, None) is None
+
+
+def test_netwatch_unknown_status_is_none():
+    """M7: an "unknown" netwatch status is not reported as up."""
+    data = parse_api(
+        data={},
+        source=[
+            {"host": "a", "status": "up"},
+            {"host": "b", "status": "down"},
+            {"host": "c", "status": "unknown"},
+            {"host": "d"},
+        ],
+        key="host",
+        vals=[{"name": "host"}, {"name": "status", "type": "bool", "default": None}],
+    )
+    assert [data[h]["status"] for h in "abcd"] == [True, False, None, None]

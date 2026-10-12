@@ -76,7 +76,7 @@ def from_entry_bool(entry, param, default=False, reverse=False) -> bool:
     if not isinstance(ret, bool):
         ret = default
 
-    return not ret if reverse else ret
+    return not ret if reverse and isinstance(ret, bool) else ret
 
 
 # ---------------------------
