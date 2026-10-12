@@ -122,15 +122,10 @@ class MikrotikRouterOSUpdate(MikrotikEntity, UpdateEntity):
 
         try:
             session = async_get_clientsession(self.hass)
-            """Get concatenated changelogs from installed_version to latest_version in reverse order."""
-            versions_to_fetch = generate_version_list(installed_version, latest_version)
-
-            tasks = [fetch_changelog(session, version) for version in versions_to_fetch]
-            changelogs = await asyncio.gather(*tasks)
-
-            # Combine all non-empty changelogs, maintaining reverse order
-            combined_changelogs = "\n\n".join(filter(None, changelogs))
-            return combined_changelogs.replace("*) ", "- ")
+            changelogs = await fetch_changelogs(
+                session, installed_version, latest_version
+            )
+            return "\n\n".join(changelogs)
 
         except Exception as e:
             _LOGGER.warning("Failed to download release notes (%s)", e)
@@ -196,45 +191,75 @@ class MikrotikRouterBoardFWUpdate(MikrotikEntity, UpdateEntity):
         )
 
 
-async def fetch_changelog(session, version: str) -> str:
-    """Asynchronously fetch the changelog for a given version."""
+MAX_PATCHES_PER_MINOR = 30
+
+
+async def fetch_changelog(session, version: str) -> str | None:
+    """Fetch the changelog for a version, or None when it does not exist."""
     url = f"https://cdn.mikrotik.com/routeros/{version}/CHANGELOG"
     try:
         async with session.get(url) as response:
             if response.status == 200:
                 text = await response.text()
                 return text.replace("*) ", "- ")
-    except Exception as e:
+            if response.status == 404:
+                return None
+    except Exception:  # noqa: BLE001
         pass
     return ""
 
 
-def generate_version_list(start_version: str, end_version: str) -> list:
-    """Generate a list of version strings from start_version to end_version in reverse order."""
-    start = Version(normalize_routeros_version(start_version))
-    end = Version(normalize_routeros_version(end_version))
-    versions = []
-
-    current = end
-    while current >= start:
-        versions.append(str(current))
-        current = decrement_version(current, start)
-
-    return versions
+def _routeros_version(major: int, minor: int, patch: int) -> str:
+    """Return a RouterOS release name; x.y.0 is published as x.y."""
+    return f"{major}.{minor}.{patch}" if patch else f"{major}.{minor}"
 
 
-def decrement_version(version: Version, start_version: Version) -> Version:
-    """Decrement version by the smallest possible step without going below start_version."""
-    if version.micro > 0:
-        next_patch = version.micro - 1
-        return Version(f"{version.major}.{version.minor}.{next_patch}")
-    elif version.minor > 0:
-        next_minor = version.minor - 1
-        return Version(
-            f"{version.major}.{next_minor}.999"
-        )  # Assuming .999 as max patch version
-    else:
-        next_major = version.major - 1
-        return Version(
-            f"{next_major}.999.999"
-        )  # Assuming .999 as max minor and patch version
+async def _fetch_minor_changelogs(
+    session, major: int, minor: int, first_patch: int, last_patch: int | None
+) -> list[str]:
+    """Fetch the changelogs of one minor series, newest first.
+
+    With an unknown last patch, probe patches in order until one is missing.
+    """
+    changelogs = []
+    patch = first_patch
+    while patch <= (MAX_PATCHES_PER_MINOR if last_patch is None else last_patch):
+        changelog = await fetch_changelog(
+            session, _routeros_version(major, minor, patch)
+        )
+        if changelog is None:
+            if last_patch is None:
+                break
+        elif changelog:
+            changelogs.append(changelog)
+        patch += 1
+    return changelogs[::-1]
+
+
+async def fetch_changelogs(session, installed_version: str, latest_version: str) -> list:
+    """Fetch the changelogs newer than installed_version up to latest_version.
+
+    Returns them newest first. Minor series are fetched concurrently; patches
+    within a series are probed sequentially so only existing releases are
+    requested.
+    """
+    start = Version(normalize_routeros_version(installed_version))
+    end = Version(normalize_routeros_version(latest_version))
+    if end <= start:
+        return []
+    if end.major != start.major:
+        changelog = await fetch_changelog(
+            session, _routeros_version(end.major, end.minor, end.micro)
+        )
+        return [changelog] if changelog else []
+
+    series = []
+    for minor in range(start.minor, end.minor + 1):
+        first_patch = start.micro + 1 if minor == start.minor else 0
+        last_patch = end.micro if minor == end.minor else None
+        series.append(
+            _fetch_minor_changelogs(session, end.major, minor, first_patch, last_patch)
+        )
+
+    results = await asyncio.gather(*series)
+    return [changelog for minor_logs in reversed(results) for changelog in minor_logs]

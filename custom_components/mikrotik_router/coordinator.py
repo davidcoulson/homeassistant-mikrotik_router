@@ -578,22 +578,21 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
     async def async_get_host_hass(self):
         """Get host data from HA entity registry"""
         registry = entity_registry.async_get(self.hass)
-        for entity in registry.entities.values():
-            if (
-                entity.config_entry_id == self.config_entry.entry_id
-                and entity.entity_id.startswith("device_tracker.")
+        prefix = f"{self.name.lower()}-host-"
+        for entity in entity_registry.async_entries_for_config_entry(
+            registry, self.config_entry.entry_id
+        ):
+            if entity.domain != "device_tracker" or not entity.unique_id.startswith(
+                prefix
             ):
-                tmp = entity.unique_id.split("-")
-                if tmp[0] != self.name.lower():
-                    continue
+                continue
 
-                if tmp[1] != "host":
-                    continue
+            # Unique IDs carry the slugified MAC (aa_bb_cc_dd_ee_ff)
+            mac = entity.unique_id[len(prefix) :].replace("_", ":").upper()
+            if not re.fullmatch(r"([0-9A-F]{2}:){5}[0-9A-F]{2}", mac):
+                continue
 
-                if ":" not in tmp[2]:
-                    continue
-
-                self.ds["host_hass"][tmp[2].upper()] = entity.original_name
+            self.ds["host_hass"][mac] = entity.original_name
 
     # ---------------------------
     #   _async_update_data
@@ -645,7 +644,11 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         if self.api.connected():
             await self.hass.async_add_executor_job(self.get_interface)
 
-        if self.api.connected() and not self.ds["host_hass"]:
+        if (
+            self.api.connected()
+            and not self.host_hass_recovered
+            and not self.ds["host_hass"]
+        ):
             await self.async_get_host_hass()
 
         if self.api.connected() and self.support_capsman:
@@ -785,6 +788,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         interface_traffic_current_run = monotonic()
         self.ds["interface"] = parse_api(
             data=self.ds["interface"],
+            prune=True,
             source=self.api.query("/interface"),
             key="default-name",
             key_secondary="name",
@@ -981,6 +985,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Get system resources data from Mikrotik"""
         self.ds["bridge_host"] = parse_api(
             data=self.ds["bridge_host"],
+            prune=True,
             source=self.api.query("/interface/bridge/host"),
             key="mac-address",
             vals=[
@@ -1052,6 +1057,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Get NAT data from Mikrotik"""
         self.ds["nat"] = parse_api(
             data=self.ds["nat"],
+            prune=True,
             source=self.api.query("/ip/firewall/nat"),
             key=".id",
             vals=[
@@ -1134,6 +1140,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Get Mangle data from Mikrotik"""
         self.ds["mangle"] = parse_api(
             data=self.ds["mangle"],
+            prune=True,
             source=self.api.query("/ip/firewall/mangle"),
             key=".id",
             vals=[
@@ -1226,6 +1233,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Get Filter data from Mikrotik"""
         self.ds["filter"] = parse_api(
             data=self.ds["filter"],
+            prune=True,
             source=self.api.query("/ip/firewall/filter"),
             key=".id",
             vals=[
@@ -1336,6 +1344,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Get Kid-control data from Mikrotik"""
         self.ds["kid-control"] = parse_api(
             data=self.ds["kid-control"],
+            prune=True,
             source=self.api.query("/ip/kid-control"),
             key="name",
             vals=[
@@ -1372,6 +1381,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Get PPP data from Mikrotik"""
         self.ds["ppp_secret"] = parse_api(
             data=self.ds["ppp_secret"],
+            prune=True,
             source=self.api.query("/ppp/secret"),
             key="name",
             vals=[
@@ -1436,6 +1446,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Get netwatch data from Mikrotik"""
         self.ds["netwatch"] = parse_api(
             data=self.ds["netwatch"],
+            prune=True,
             source=self.api.query("/tool/netwatch"),
             key="host",
             vals=[
@@ -1770,6 +1781,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Get list of all scripts from Mikrotik"""
         self.ds["script"] = parse_api(
             data=self.ds["script"],
+            prune=True,
             source=self.api.query("/system/script"),
             key="name",
             vals=[
@@ -1786,6 +1798,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Get list of all environment variables from Mikrotik"""
         self.ds["environment"] = parse_api(
             data=self.ds["environment"],
+            prune=True,
             source=self.api.query("/system/script/environment"),
             key="name",
             vals=[
@@ -1824,6 +1837,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Get Queue data from Mikrotik"""
         self.ds["queue"] = parse_api(
             data=self.ds["queue"],
+            prune=True,
             source=self.api.query("/queue/simple"),
             key="name",
             vals=[
@@ -1902,6 +1916,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Get ARP data from Mikrotik"""
         self.ds["arp"] = parse_api(
             data=self.ds["arp"],
+            prune=True,
             source=self.api.query("/ip/arp"),
             key="mac-address",
             vals=[{"name": "mac-address"}, {"name": "address"}, {"name": "interface"}],
@@ -1932,6 +1947,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Get static DNS data from Mikrotik"""
         self.ds["dns"] = parse_api(
             data=self.ds["dns"],
+            prune=True,
             source=self.api.query("/ip/dns/static"),
             key="name",
             vals=[{"name": "name"}, {"name": "address"}, {"name": "comment"}],
@@ -1947,6 +1963,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Get DHCP data from Mikrotik"""
         self.ds["dhcp"] = parse_api(
             data=self.ds["dhcp"],
+            prune=True,
             source=self.api.query("/ip/dhcp-server/lease"),
             key="mac-address",
             vals=[
@@ -2007,7 +2024,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                     self.ds["dhcp"][uid]["server"]
                 ]["interface"]
             elif uid in self.ds["arp"]:
-                if self.ds["arp"][uid]["bridge"] != "unknown":
+                if self.ds["arp"][uid]["bridge"]:
                     self.ds["dhcp"][uid]["interface"] = self.ds["arp"][uid]["bridge"]
                 else:
                     self.ds["dhcp"][uid]["interface"] = self.ds["arp"][uid]["interface"]
@@ -2019,6 +2036,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Get DHCP server data from Mikrotik"""
         self.ds["dhcp-server"] = parse_api(
             data=self.ds["dhcp-server"],
+            prune=True,
             source=self.api.query("/ip/dhcp-server"),
             key="name",
             vals=[
@@ -2034,6 +2052,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Get DHCP client data from Mikrotik"""
         self.ds["dhcp-client"] = parse_api(
             data=self.ds["dhcp-client"],
+            prune=True,
             source=self.api.query("/ip/dhcp-client"),
             key="interface",
             vals=[
@@ -2050,6 +2069,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Get DHCP network data from Mikrotik"""
         self.ds["dhcp-network"] = parse_api(
             data=self.ds["dhcp-network"],
+            prune=True,
             source=self.api.query("/ip/dhcp-server/network"),
             key="address",
             vals=[
@@ -2093,6 +2113,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         for wifimodule in self._wifimodules:
             self.ds["wireless"] = parse_api(
                 data=self.ds["wireless"],
+                prune=True,
                 source=self.api.query(f"/interface/{wifimodule}", ignore_trap=True),
                 key="name",
                 vals=[
@@ -2140,10 +2161,15 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
     # ---------------------------
     def get_wireless_hosts(self) -> None:
         """Get wireless hosts data from Mikrotik"""
-        self.ds["wireless_hosts"] = {}
+        # Build a new table and swap it in, so readers never see it half-filled
+        wireless_hosts = {}
         for wifimodule in self._wifimodules:
-            self.ds["wireless_hosts"] = parse_api(
-                data=self.ds["wireless_hosts"],
+            # The wifi/wifiwave2 registration table reports RSSI as "signal"
+            signal_source = (
+                "signal" if wifimodule in ("wifi", "wifiwave2") else "signal-strength"
+            )
+            wireless_hosts = parse_api(
+                data=wireless_hosts,
                 source=self.api.query(
                     f"/interface/{wifimodule}/registration-table",
                     ignore_trap=True,
@@ -2154,12 +2180,13 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                     {"name": "interface", "default": "unknown"},
                     {"name": "ap", "type": "bool"},
                     {"name": "uptime"},
-                    {"name": "signal-strength"},
+                    {"name": "signal-strength", "source": signal_source},
                     {"name": "tx-ccq"},
                     {"name": "tx-rate"},
                     {"name": "rx-rate"},
                 ],
             )
+        self.ds["wireless_hosts"] = wireless_hosts
 
     # ---------------------------
     #   async_process_host
@@ -2443,10 +2470,13 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 ],
             )
 
-            threshold = self.api.query("/ip/accounting")[0].get("threshold")
+            accounting_settings = self.api.query("/ip/accounting") or [{}]
+            threshold = int(accounting_settings[0].get("threshold") or 0)
             entry_count = len(accounting_data)
 
-            if entry_count == threshold:
+            if not threshold:
+                pass
+            elif entry_count == threshold:
                 _LOGGER.warning(
                     f"Accounting entries count reached the threshold of {threshold}!"
                     " Some entries were not saved by Mikrotik so accounting calculation won't be correct."

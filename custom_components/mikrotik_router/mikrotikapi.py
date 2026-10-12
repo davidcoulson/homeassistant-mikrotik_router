@@ -386,7 +386,7 @@ class MikrotikAPI:
                 return None
 
         self.lock.release()
-        return response or None
+        return response
 
     # ---------------------------
     #   set_value

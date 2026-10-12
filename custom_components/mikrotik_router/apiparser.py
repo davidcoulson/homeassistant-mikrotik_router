@@ -94,12 +94,20 @@ def parse_api(
     ensure_vals=None,
     only=None,
     skip=None,
+    prune=False,
 ) -> dict:
-    """Get data from API."""
+    """Get data from API.
+
+    With prune, keyed entries missing from a successfully fetched source
+    (a list, possibly empty) are removed, so deleted rows do not linger.
+    """
     debug = _LOGGER.getEffectiveLevel() == 10
     if type(source) == dict:
         tmp = source
         source = [tmp]
+
+    if prune and source is not None and (key or key_search):
+        data = _prune(data, source, key, key_secondary, key_search, only, skip)
 
     if not source:
         if not key and not key_search:
@@ -137,6 +145,27 @@ def parse_api(
 
         if val_proc:
             data = fill_vals_proc(data, uid, val_proc)
+
+    return data
+
+
+# ---------------------------
+#   _prune
+# ---------------------------
+def _prune(data, source, key, key_secondary, key_search, only, skip) -> dict:
+    """Drop keyed entries that are no longer present in the source."""
+    keymap = generate_keymap(data, key_search)
+    current = set()
+    for entry in source:
+        if only and not matches_only(entry, only):
+            continue
+        if skip and can_skip(entry, skip):
+            continue
+        if uid := get_uid(entry, key, key_secondary, key_search, keymap):
+            current.add(uid)
+
+    for uid in [uid for uid in data if uid not in current]:
+        del data[uid]
 
     return data
 
