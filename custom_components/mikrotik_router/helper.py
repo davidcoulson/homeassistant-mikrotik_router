@@ -4,12 +4,32 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from collections.abc import Mapping
+from datetime import timedelta
 
 from homeassistant.util import slugify
 
-from .const import DEFAULT_PORT, DOMAIN
+from .const import (
+    CONF_TRACK_HOSTS_TIMEOUT,
+    DEFAULT_PORT,
+    DEFAULT_TRACK_HOST_TIMEOUT,
+    DOMAIN,
+    MAX_TRACK_HOST_TIMEOUT,
+)
 
 INVALID_ROUTER_IDENTIFIERS = {"", "n/a", "none", "unknown"}
+
+
+# ---------------------------
+#   track_hosts_timeout
+# ---------------------------
+def track_hosts_timeout(options: Mapping) -> timedelta:
+    """Return the host presence timeout, clamped to a sane range."""
+    try:
+        seconds = int(options.get(CONF_TRACK_HOSTS_TIMEOUT, DEFAULT_TRACK_HOST_TIMEOUT))
+    except (TypeError, ValueError):
+        seconds = DEFAULT_TRACK_HOST_TIMEOUT
+    return timedelta(seconds=min(max(seconds, 1), MAX_TRACK_HOST_TIMEOUT))
 
 
 # ---------------------------

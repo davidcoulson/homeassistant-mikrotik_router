@@ -1,5 +1,7 @@
 """Regression tests for parser pruning and release notes fetching."""
 
+import pytest
+
 from custom_components.mikrotik_router.apiparser import parse_api
 from custom_components.mikrotik_router.update import fetch_changelogs
 
@@ -67,3 +69,28 @@ async def test_fetch_changelogs_nothing_newer():
     session = _Session(set())
     assert await fetch_changelogs(session, "7.21", "7.21") == []
     assert session.requested == []
+
+
+@pytest.mark.parametrize(
+    ("value", "seconds"),
+    [(None, 180), (0, 1), (-5, 1), (10**12, 86400), (300.0, 300), ("bad", 180)],
+)
+def test_track_hosts_timeout_is_clamped(value, seconds):
+    """M9: stored zero, negative or huge timeouts are clamped."""
+    from datetime import timedelta
+
+    from custom_components.mikrotik_router.helper import track_hosts_timeout
+
+    options = {} if value is None else {"track_network_hosts_timeout": value}
+    assert track_hosts_timeout(options) == timedelta(seconds=seconds)
+
+
+async def test_configured_instances_ignores_case(hass):
+    """M8: names that differ only in case would share entity unique ids."""
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    from custom_components.mikrotik_router.config_flow import configured_instances
+    from custom_components.mikrotik_router.const import DOMAIN
+
+    MockConfigEntry(domain=DOMAIN, data={"name": "Office"}).add_to_hass(hass)
+    assert "office" in configured_instances(hass)

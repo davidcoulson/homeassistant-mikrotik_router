@@ -19,7 +19,7 @@ from homeassistant.helpers import entity_registry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util.dt import utcnow
 
-from .helper import parse_routeros_major_minor
+from .helper import parse_routeros_major_minor, track_hosts_timeout
 
 
 from homeassistant.const import (
@@ -38,8 +38,6 @@ from .const import (
     DEFAULT_TRACK_IFACE_CLIENTS,
     CONF_TRACK_HOSTS,
     DEFAULT_TRACK_HOSTS,
-    CONF_TRACK_HOSTS_TIMEOUT,
-    DEFAULT_TRACK_HOST_TIMEOUT,
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     CONF_DEVICE_TRACKER_SCAN_INTERVAL,
@@ -347,11 +345,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
     @property
     def option_track_network_hosts_timeout(self) -> timedelta:
         """Config entry option: how long a host stays home after a reply."""
-        return timedelta(
-            seconds=self.config_entry.options.get(
-                CONF_TRACK_HOSTS_TIMEOUT, DEFAULT_TRACK_HOST_TIMEOUT
-            )
-        )
+        return track_hosts_timeout(self.config_entry.options)
 
     # ---------------------------
     #   option_sensor_port_traffic
