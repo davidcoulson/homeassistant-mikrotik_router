@@ -38,6 +38,8 @@ from .const import (
     DEFAULT_TRACK_IFACE_CLIENTS,
     CONF_TRACK_HOSTS,
     DEFAULT_TRACK_HOSTS,
+    CONF_TRACK_HOSTS_TIMEOUT,
+    DEFAULT_TRACK_HOST_TIMEOUT,
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     CONF_DEVICE_TRACKER_SCAN_INTERVAL,
@@ -131,67 +133,96 @@ class MikrotikTrackerCoordinator(DataUpdateCoordinator[None]):
     #   _async_update_data
     # ---------------------------
     async def _async_update_data(self):
-        """Trigger update by timer"""
-        if not self.coordinator.option_track_network_hosts:
-            return
-
-        if "test" not in self.coordinator.ds["access"]:
-            return
-
-        for uid in list(self.coordinator.ds["host"]):
-            if not self.coordinator.host_tracking_initialized:
+        """Ping wired hosts and return the host snapshot."""
+        coordinator = self.coordinator
+        hosts = coordinator.ds["host"]
+        if coordinator.option_track_network_hosts:
+            if not coordinator.host_tracking_initialized:
                 # Add missing default values
-                for key, default in zip(
-                    [
-                        "address",
-                        "mac-address",
-                        "interface",
-                        "host-name",
-                        "last-seen",
-                        "available",
-                    ],
-                    ["unknown", "unknown", "unknown", "unknown", False, False],
-                ):
-                    if key not in self.coordinator.ds["host"][uid]:
-                        self.coordinator.ds["host"][uid][key] = default
+                for host in list(hosts.values()):
+                    for key, default in zip(
+                        [
+                            "address",
+                            "mac-address",
+                            "interface",
+                            "host-name",
+                            "last-seen",
+                            "available",
+                        ],
+                        ["unknown", "unknown", "unknown", "unknown", False, False],
+                    ):
+                        host.setdefault(key, default)
 
-            # Check host availability
-            if (
-                self.coordinator.ds["host"][uid]["source"]
-                not in ["capsman", "wireless"]
-                and self.coordinator.ds["host"][uid]["address"] not in ["unknown", ""]
-                and self.coordinator.ds["host"][uid]["interface"] not in ["unknown", ""]
+            # Pinging needs the "test" policy. Without it, wireless, CAPsMAN
+            # and DHCP hosts are still tracked from the main poll.
+            if "test" in coordinator.ds["access"] and (
+                targets := self._ping_targets()
             ):
-                tmp_interface = self.coordinator.ds["host"][uid]["interface"]
-                if (
-                    uid in self.coordinator.ds["arp"]
-                    and self.coordinator.ds["arp"][uid]["bridge"] != ""
-                ):
-                    tmp_interface = self.coordinator.ds["arp"][uid]["bridge"]
-
-                _LOGGER.debug(
-                    "Ping host: %s", self.coordinator.ds["host"][uid]["address"]
+                results = await self.hass.async_add_executor_job(
+                    self._ping_hosts, targets
                 )
+                now = utcnow()
+                for uid, available in results.items():
+                    # None means the API failed: keep the previous state
+                    if available is None or uid not in hosts:
+                        continue
+                    hosts[uid]["available"] = available
+                    if available:
+                        hosts[uid]["last-seen"] = now
 
-                self.coordinator.ds["host"][uid]["available"] = (
-                    await self.hass.async_add_executor_job(
-                        self.api.arp_ping,
-                        self.coordinator.ds["host"][uid]["address"],
-                        tmp_interface,
-                    )
-                )
+            coordinator.host_tracking_initialized = True
 
-            # Update last seen
-            if self.coordinator.ds["host"][uid]["available"]:
-                self.coordinator.ds["host"][uid]["last-seen"] = utcnow()
-
-        self.coordinator.host_tracking_initialized = True
-
-        await self.coordinator.async_process_host()
+        await coordinator.async_process_host()
         return {
-            "host": self.coordinator.ds["host"],
-            "routerboard": self.coordinator.ds["routerboard"],
+            "host": coordinator.ds["host"],
+            "routerboard": coordinator.ds["routerboard"],
         }
+
+    # ---------------------------
+    #   _ping_targets
+    # ---------------------------
+    def _ping_targets(self) -> dict[str, tuple[str, str]]:
+        """Return uid -> (address, interface) for wired hosts due a ping."""
+        # A host seen within half the timeout stays home until the next cycle,
+        # so it doesn't need a ping yet.
+        fresh_after = utcnow() - self.coordinator.option_track_network_hosts_timeout / 2
+        arp = self.coordinator.ds["arp"]
+        targets = {}
+        for uid, host in list(self.coordinator.ds["host"].items()):
+            if (
+                host.get("source") in ("capsman", "wireless")
+                or host.get("address") in ("unknown", "", None)
+                or host.get("interface") in ("unknown", "", None)
+            ):
+                continue
+
+            last_seen = host.get("last-seen")
+            if host.get("available") and last_seen and last_seen > fresh_after:
+                continue
+
+            interface = host["interface"]
+            if uid in arp and arp[uid].get("bridge", "") != "":
+                interface = arp[uid]["bridge"]
+            targets[uid] = (host["address"], interface)
+
+        return targets
+
+    # ---------------------------
+    #   _ping_hosts
+    # ---------------------------
+    def _ping_hosts(
+        self, targets: dict[str, tuple[str, str]]
+    ) -> dict[str, bool | None]:
+        """Ping all targets in one executor job."""
+        results = {}
+        for uid, (address, interface) in targets.items():
+            _LOGGER.debug("Ping host: %s", address)
+            results[uid] = self.api.arp_ping(address, interface)
+            if results[uid] is None and not self.api.connected():
+                # Connection lost: the rest would fail too
+                break
+
+        return results
 
 
 # ---------------------------
@@ -309,6 +340,18 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
     def option_track_network_hosts(self):
         """Config entry option to not track ARP."""
         return self.config_entry.options.get(CONF_TRACK_HOSTS, DEFAULT_TRACK_HOSTS)
+
+    # ---------------------------
+    #   option_track_network_hosts_timeout
+    # ---------------------------
+    @property
+    def option_track_network_hosts_timeout(self) -> timedelta:
+        """Config entry option: how long a host stays home after a reply."""
+        return timedelta(
+            seconds=self.config_entry.options.get(
+                CONF_TRACK_HOSTS_TIMEOUT, DEFAULT_TRACK_HOST_TIMEOUT
+            )
+        )
 
     # ---------------------------
     #   option_sensor_port_traffic
