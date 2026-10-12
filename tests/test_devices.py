@@ -1,6 +1,8 @@
 """Device registry layout tests."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from homeassistant.const import (
     CONF_HOST,
@@ -17,7 +19,20 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.mikrotik_router import async_remove_config_entry_device
+from custom_components.mikrotik_router.binary_sensor_types import (
+    SENSOR_TYPES as BINARY_SENSOR_TYPES,
+)
+from custom_components.mikrotik_router.button_types import SENSOR_TYPES as BUTTON_TYPES
 from custom_components.mikrotik_router.const import DOMAIN
+from custom_components.mikrotik_router.device_tracker_types import (
+    SENSOR_TYPES as DEVICE_TRACKER_TYPES,
+)
+from custom_components.mikrotik_router.entity import MikrotikEntity
+from custom_components.mikrotik_router.helper import child_device_identifier
+from custom_components.mikrotik_router.sensor_types import SENSOR_TYPES
+from custom_components.mikrotik_router.switch_types import SENSOR_TYPES as SWITCH_TYPES
+from custom_components.mikrotik_router.update_types import SENSOR_TYPES as UPDATE_TYPES
 
 SERIAL = "HEX123"
 ETHER_MAC = "AA:BB:CC:DD:EE:01"
@@ -179,3 +194,139 @@ async def test_child_devices_and_migration(hass: HomeAssistant, caplog) -> None:
     assert not [r for r in caplog.records if r.levelname in ("ERROR", "WARNING")
         and "has not been tested" not in r.getMessage()
     ]
+
+
+async def test_orphaned_devices_removed(hass: HomeAssistant) -> None:
+    """Legacy devices that can't be converted and empty child devices are removed."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=3,
+        minor_version=3,
+        unique_id=f"routerboard:{SERIAL.lower()}",
+        data={
+            CONF_NAME: "Mikrotik",
+            CONF_HOST: "192.0.2.1",
+            CONF_PORT: 0,
+            CONF_SSL: False,
+            CONF_VERIFY_SSL: False,
+            CONF_USERNAME: "u",
+            CONF_PASSWORD: "p",
+        },
+    )
+    entry.add_to_hass(hass)
+
+    dev_reg = dr.async_get(hass)
+    router = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        connections={(DOMAIN, SERIAL)},
+        identifiers={(DOMAIN, SERIAL)},
+        name="Mikrotik RB5009",
+    )
+    # Mangle rules were all deleted on the router: nothing claims this device
+    legacy_mangle = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        connections={(DOMAIN, "Mangle")},
+        name="Mikrotik Mangle",
+        via_device_id=router.id,
+    )
+    # Child device of an interface that no longer exists
+    stale_child = dev_reg.async_get_or_create_child(
+        config_entry_id=entry.entry_id,
+        identifiers={child_device_identifier(entry.entry_id, "interface", "ether9")},
+        name="ether9",
+        parent_device_id=router.id,
+    )
+    dev_reg.async_config_entry_unloaded(entry.entry_id)
+
+    with (
+        patch(
+            "custom_components.mikrotik_router.coordinator.MikrotikCoordinator._async_update_data",
+            _fake_update,
+        ),
+        patch(
+            "custom_components.mikrotik_router.coordinator.MikrotikTrackerCoordinator._async_update_data",
+            _fake_tracker_update,
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert dev_reg.async_get(legacy_mangle.id) is None
+    assert dev_reg.async_get(stale_child.id) is None
+    assert dev_reg.async_get(router.id) is not None
+    children = {
+        child.name for child in dr.async_entries_for_parent_device(dev_reg, router.id)
+    }
+    assert children == {"ether1", "vlan10", "NAT"}
+
+    # The router can't be removed from the UI, its child devices can
+    assert not await async_remove_config_entry_device(
+        hass, entry, dev_reg.async_get(router.id)
+    )
+    child = dr.async_entries_for_parent_device(dev_reg, router.id)[0]
+    assert await async_remove_config_entry_device(hass, entry, child)
+
+
+class _AnyData(dict):
+    """Row data that returns a placeholder for any field."""
+
+    def __missing__(self, key):
+        return f"{key}-value"
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        pytest.param(description, id=f"{description.func}-{description.key}")
+        for description in (
+            *BINARY_SENSOR_TYPES,
+            *BUTTON_TYPES,
+            *DEVICE_TRACKER_TYPES,
+            *SENSOR_TYPES,
+            *SWITCH_TYPES,
+            *UPDATE_TYPES,
+        )
+    ],
+)
+def test_device_info_links_to_router(description) -> None:
+    """Every entity belongs to the router, a router child device, or a client
+    device connected via the router; none creates a standalone device."""
+    entry_id = "entry123"
+    router_device_id = "router-device-id"
+    uid = "uid1" if description.data_reference else None
+    row = _AnyData(comment="")
+    data = _AnyData(
+        routerboard=_AnyData({"serial-number": SERIAL}),
+        host={},
+    )
+    if uid:
+        data.setdefault(description.data_path, {})[uid] = row
+    else:
+        data.setdefault(description.data_path, row)
+    coordinator = MagicMock()
+    coordinator.data = data
+    coordinator.config_entry.entry_id = entry_id
+    coordinator.config_entry.data = {CONF_NAME: "Mikrotik"}
+    coordinator.config_entry.runtime_data.router_device_id = router_device_id
+
+    device_info = MikrotikEntity(coordinator, description, uid).device_info
+
+    if description.ha_group == "System":
+        assert device_info["identifiers"] == {(DOMAIN, SERIAL)}
+        assert "parent_device_id" not in device_info
+        assert "via_device_id" not in device_info
+    elif "mac-address" in description.data_reference:
+        assert device_info["via_device_id"] == router_device_id
+        assert device_info["connections"] == {
+            (dr.CONNECTION_NETWORK_MAC, "mac-address-value")
+        }
+        assert "identifiers" not in device_info
+    else:
+        assert description.ha_group
+        assert device_info["parent_device_id"] == router_device_id
+        assert "connections" not in device_info
+        assert "via_device_id" not in device_info
+        (identifier,) = device_info["identifiers"]
+        assert identifier[0] == DOMAIN
+        assert identifier[1].startswith(f"{entry_id}-")
+        assert device_info["name"]

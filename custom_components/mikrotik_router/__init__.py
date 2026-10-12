@@ -122,6 +122,7 @@ async def async_setup_entry(
     )
 
     await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
+    _async_remove_orphaned_devices(hass, config_entry, router_device_id)
 
     config_entry.async_on_unload(config_entry.add_update_listener(async_reload_entry))
 
@@ -212,6 +213,39 @@ def _async_migrate_child_devices(
 
 
 # ---------------------------
+#   _async_remove_orphaned_devices
+# ---------------------------
+def _async_remove_orphaned_devices(
+    hass: HomeAssistant, config_entry: MikrotikConfigEntry, router_device_id: str
+) -> None:
+    """Remove devices of this entry that no longer have any entities.
+
+    Runs after the platforms are set up, so every entity has been linked to its
+    current device. Legacy group devices that could not be converted in place
+    (and child devices of deleted interfaces or rule groups) are left empty.
+    """
+    dev_reg = device_registry.async_get(hass)
+    ent_reg = entity_registry.async_get(hass)
+    used_device_ids = {
+        entry.device_id
+        for entry in entity_registry.async_entries_for_config_entry(
+            ent_reg, config_entry.entry_id
+        )
+        if entry.device_id
+    }
+    devices = (
+        *device_registry.async_entries_for_config_entry(dev_reg, config_entry.entry_id),
+        *device_registry.async_child_entries_for_config_entry(
+            dev_reg, config_entry.entry_id
+        ),
+    )
+    for device in devices:
+        if device.id != router_device_id and device.id not in used_device_ids:
+            _LOGGER.debug("Removing orphaned device %s (%s)", device.name, device.id)
+            dev_reg.async_remove_device(device.id)
+
+
+# ---------------------------
 #   _async_update_router_unique_id
 # ---------------------------
 def _async_update_router_unique_id(
@@ -272,8 +306,9 @@ async def async_unload_entry(
 async def async_remove_config_entry_device(
     hass, config_entry: MikrotikConfigEntry, device_entry: device_registry.DeviceEntry
 ) -> bool:
-    """Remove a config entry from a device."""
-    return True
+    """Allow removing any device except the router itself."""
+    runtime_data = getattr(config_entry, "runtime_data", None)
+    return runtime_data is None or device_entry.id != runtime_data.router_device_id
 
 
 # ---------------------------
