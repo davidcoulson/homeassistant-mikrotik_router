@@ -283,3 +283,40 @@ def test_traffic_totals_follow_slow_tier() -> None:
     coordinator._slow_poll = True
     coordinator.get_interface()
     assert coordinator.ds["interface"]["ether1"]["tx-total"] == 5000
+
+
+async def test_process_host_is_serialised() -> None:
+    """Item 3: the two coordinators never run host processing at once."""
+    import asyncio
+
+    coordinator = _coordinator()
+    coordinator._host_lock = asyncio.Lock()
+    running = []
+    overlaps = []
+
+    async def body():
+        running.append(1)
+        overlaps.append(len(running))
+        await asyncio.sleep(0)
+        running.pop()
+
+    coordinator._async_process_host = body
+    await asyncio.gather(
+        coordinator.async_process_host(), coordinator.async_process_host()
+    )
+    assert overlaps == [1, 1]
+
+
+def test_arp_table_is_swapped_not_resized() -> None:
+    """Item 3: readers holding the old table never see it change size."""
+    coordinator = _coordinator(
+        {"/ip/arp": [{"mac-address": "BB", "address": "10.0.0.3",
+                      "interface": "ether2"}]}
+    )
+    coordinator.ds.update({"bridge": {}, "bridge_host": {}, "dhcp-client": {}})
+    old = {"AA": {"mac-address": "AA", "address": "10.0.0.2",
+                  "interface": "ether1", "bridge": ""}}
+    coordinator.ds["arp"] = old
+    coordinator.get_arp()
+    assert set(old) == {"AA"}
+    assert set(coordinator.ds["arp"]) == {"BB"}

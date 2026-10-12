@@ -404,6 +404,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         self._last_slow_poll = None
         self._last_firmware_check = None
         self._dhcp_server_misses = set()
+        self._host_lock = asyncio.Lock()
 
     # ---------------------------
     #   option_track_iface_clients
@@ -1148,7 +1149,9 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
     def get_bridge(self) -> None:
         """Get system resources data from Mikrotik"""
         self.ds["bridge_host"] = parse_api(
-            data=self.ds["bridge_host"],
+            # Parse into a copy and swap it in: the tracker reads these
+            # tables on the event loop while this runs in the executor (item 3)
+            data=dict(self.ds["bridge_host"]),
             prune=True,
             source=self.api.query("/interface/bridge/host"),
             key="mac-address",
@@ -2031,8 +2034,9 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
     # ---------------------------
     def get_arp(self) -> None:
         """Get ARP data from Mikrotik"""
-        self.ds["arp"] = parse_api(
-            data=self.ds["arp"],
+        # Built aside and swapped in at the end (item 3)
+        arp = parse_api(
+            data=dict(self.ds["arp"]),
             prune=True,
             source=self.api.query("/ip/arp"),
             key="mac-address",
@@ -2040,22 +2044,22 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             ensure_vals=[{"name": "bridge", "default": ""}],
         )
 
-        for uid, vals in self.ds["arp"].items():
+        for uid, vals in arp.items():
             if vals["interface"] in self.ds["bridge"] and uid in self.ds["bridge_host"]:
-                self.ds["arp"][uid]["bridge"] = vals["interface"]
-                self.ds["arp"][uid]["interface"] = self.ds["bridge_host"][uid][
-                    "interface"
-                ]
+                arp[uid]["bridge"] = vals["interface"]
+                arp[uid]["interface"] = self.ds["bridge_host"][uid]["interface"]
 
         if self.ds["dhcp-client"]:
             to_remove = [
                 uid
-                for uid, vals in self.ds["arp"].items()
+                for uid, vals in arp.items()
                 if vals["interface"] in self.ds["dhcp-client"]
             ]
 
             for uid in to_remove:
-                self.ds["arp"].pop(uid)
+                arp.pop(uid)
+
+        self.ds["arp"] = arp
 
     # ---------------------------
     #   get_dns
@@ -2079,7 +2083,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
     def get_dhcp(self) -> None:
         """Get DHCP data from Mikrotik"""
         self.ds["dhcp"] = parse_api(
-            data=self.ds["dhcp"],
+            data=dict(self.ds["dhcp"]),
             prune=True,
             source=self.api.query("/ip/dhcp-server/lease"),
             key="mac-address",
@@ -2321,6 +2325,12 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
     # ---------------------------
     async def async_process_host(self) -> None:
         """Get host tracking data"""
+        # Both coordinators call this, and it awaits the vendor lookup
+        async with self._host_lock:
+            await self._async_process_host()
+
+    async def _async_process_host(self) -> None:
+        """Merge the client tables into the host table"""
         # Add hosts from CAPS-MAN
         capsman_detected = {}
         if self.support_capsman:
