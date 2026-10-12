@@ -81,6 +81,10 @@ def is_valid_ip(address):
         return False
 
 
+HYSTERESIS_DELTA = 2
+HYSTERESIS_MAX_AGE = 300
+
+
 def _split_pair(value, convert, default=0) -> tuple:
     """Split an upload/download pair such as "1000/2000".
 
@@ -344,6 +348,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
 
         self.last_hwinfo_update = datetime(1970, 1, 1)
         self.interface_traffic_last_run = None
+        self._published = {}
         self.rebootcheck = 0
 
     # ---------------------------
@@ -1534,6 +1539,40 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 for uid, vals in self.ds["health7"].items():
                     self.ds["health"][uid] = vals["value"]
 
+        for key in self.ds["health"]:
+            if "temperature" in key:
+                self._apply_hysteresis("health", key)
+
+    # ---------------------------
+    #   _apply_hysteresis
+    # ---------------------------
+    def _apply_hysteresis(self, path, key) -> None:
+        """Hold a jittery value until it moves enough or gets old.
+
+        CPU load and temperatures flicker by a point every poll, and each
+        change is a recorder row. Publish a new value only when it differs
+        by HYSTERESIS_DELTA or the last one is HYSTERESIS_MAX_AGE old.
+        """
+        value = self.ds[path].get(key)
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            self._published.pop((path, key), None)
+            return
+
+        now = monotonic()
+        published = self._published.get((path, key))
+        if published is not None:
+            old_value, old_number, since = published
+            if (
+                abs(number - old_number) < HYSTERESIS_DELTA
+                and now - since < HYSTERESIS_MAX_AGE
+            ):
+                self.ds[path][key] = old_value
+                return
+
+        self._published[(path, key)] = (value, number, now)
+
     # ---------------------------
     #   get_system_resource
     # ---------------------------
@@ -1562,6 +1601,8 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 {"name": "captive_authorized", "default": 0},
             ],
         )
+
+        self._apply_hysteresis("resource", "cpu-load")
 
         full_version = self.ds["resource"].get("version")
         if full_version and full_version != "unknown":

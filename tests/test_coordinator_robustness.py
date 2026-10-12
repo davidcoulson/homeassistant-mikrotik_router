@@ -113,3 +113,30 @@ def test_dhcp_network_with_host_bits() -> None:
     coordinator.get_dhcp_network()
     (network,) = coordinator.ds["dhcp-network"].values()
     assert network["IPv4Network"] == IPv4Network("10.0.0.0/24")
+
+
+def test_cpu_load_and_temperature_hysteresis(monkeypatch) -> None:
+    """P1: small moves are held back until they get old."""
+    from custom_components.mikrotik_router import coordinator as module
+
+    clock = [1000.0]
+    monkeypatch.setattr(module, "monotonic", lambda: clock[0])
+    coordinator = _coordinator()
+    coordinator._published = {}
+    coordinator.ds["resource"] = {}
+    coordinator.ds["health"] = {}
+
+    def publish(path, key, value):
+        coordinator.ds[path][key] = value
+        coordinator._apply_hysteresis(path, key)
+        return coordinator.ds[path][key]
+
+    assert publish("resource", "cpu-load", 10) == 10
+    assert publish("resource", "cpu-load", 11) == 10
+    assert publish("resource", "cpu-load", 12) == 12
+    assert publish("health", "cpu-temperature", "45") == "45"
+    assert publish("health", "cpu-temperature", "46") == "45"
+    clock[0] += 301
+    assert publish("health", "cpu-temperature", "46") == "46"
+    assert publish("resource", "cpu-load", "unknown") == "unknown"
+    assert publish("resource", "cpu-load", 13) == 13
