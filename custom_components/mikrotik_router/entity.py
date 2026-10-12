@@ -128,6 +128,9 @@ async def async_add_entities(
         coordinator = config_entry.runtime_data.data_coordinator
 
     known_unique_ids = set()
+    # (description, uid) pairs that already have an entity, so later
+    # polls skip building (and slugifying) an object just to discard it
+    added = set()
 
     @callback
     def async_update_controller():
@@ -150,6 +153,9 @@ async def async_add_entities(
                 uids = tuple(data)
 
             for uid in uids:
+                if (id(entity_description), uid) in added:
+                    continue
+
                 if uid is not None and _skip_sensor(
                     config_entry, entity_description, data, uid
                 ):
@@ -158,6 +164,7 @@ async def async_add_entities(
                 obj = dispatcher[entity_description.func](
                     coordinator, entity_description, uid
                 )
+                added.add((id(entity_description), uid))
                 if obj.unique_id in known_unique_ids:
                     continue
 
