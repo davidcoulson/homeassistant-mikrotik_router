@@ -266,6 +266,12 @@ async def test_orphaned_devices_removed(hass: HomeAssistant) -> None:
     child = dr.async_entries_for_parent_device(dev_reg, router.id)[0]
     assert await async_remove_config_entry_device(hass, entry, child)
 
+    # M3: unloading closes both RouterOS connections
+    runtime = entry.runtime_data
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    assert runtime.data_coordinator.api._closed
+    assert runtime.tracker_coordinator.api._closed
+
 
 class _AnyData(dict):
     """Row data that returns a placeholder for any field."""
