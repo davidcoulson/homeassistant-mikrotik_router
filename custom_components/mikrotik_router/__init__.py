@@ -125,6 +125,7 @@ async def async_setup_entry(
     config_entry.async_on_unload(_async_close_apis)
     await coordinator.async_config_entry_first_refresh()
     _async_update_router_unique_id(hass, config_entry, coordinator)
+    _async_migrate_firewall_unique_ids(hass, config_entry, coordinator)
     router_device_id, router_identifier = _async_setup_router_device(
         hass, config_entry, coordinator
     )
@@ -184,6 +185,52 @@ def _async_check_connection_security(
             translation_key=translation_key,
             translation_placeholders={"name": config_entry.title},
         )
+
+
+# ---------------------------
+#   _async_migrate_firewall_unique_ids
+# ---------------------------
+FIREWALL_RULE_PATHS = ("nat", "mangle", "filter")
+
+
+@callback
+def _async_migrate_firewall_unique_ids(
+    hass: HomeAssistant,
+    config_entry: MikrotikConfigEntry,
+    coordinator: MikrotikCoordinator,
+) -> None:
+    """Move NAT/Mangle/Filter switches from content-based to .id-based unique ids.
+
+    The old unique id was built from the rule's matchers, so editing a rule
+    created a second entity. Runs on every setup and only renames entities whose
+    rule is present in the current data, so it is idempotent.
+    """
+    ent_reg = entity_registry.async_get(hass)
+    inst = config_entry.data[CONF_NAME].lower()
+    for key in FIREWALL_RULE_PATHS:
+        rows = (coordinator.data or {}).get(key) or {}
+        old_to_new = {}
+        duplicates = set()
+        for row in rows.values():
+            if not row.get("uniq-id") or not row.get(".id"):
+                continue
+            old = f"{inst}-{key}-{slugify(str(row['uniq-id']).lower())}"
+            if old in old_to_new:
+                duplicates.add(old)
+            old_to_new[old] = f"{inst}-{key}-{slugify(str(row['.id']).lower())}"
+
+        for old, new in old_to_new.items():
+            if old in duplicates:
+                # Duplicate rules had no entity: nothing to migrate
+                continue
+            entity_id = ent_reg.async_get_entity_id(Platform.SWITCH, DOMAIN, old)
+            if entity_id is None:
+                continue
+            if ent_reg.async_get_entity_id(Platform.SWITCH, DOMAIN, new):
+                _LOGGER.debug("Not migrating %s: %s already exists", entity_id, new)
+                continue
+            _LOGGER.debug("Migrating %s unique id %s -> %s", entity_id, old, new)
+            ent_reg.async_update_entity(entity_id, new_unique_id=new)
 
 
 # ---------------------------

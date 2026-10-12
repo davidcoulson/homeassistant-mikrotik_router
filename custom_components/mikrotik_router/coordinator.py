@@ -298,9 +298,6 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         if _LOGGER.getEffectiveLevel() == 10:
             self.debug = True
 
-        self.nat_removed = {}
-        self.mangle_removed = {}
-        self.filter_removed = {}
         self.host_hass_recovered = False
         self.host_tracking_initialized = False
 
@@ -1132,29 +1129,10 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             only=[{"key": "action", "value": "dst-nat"}],
         )
 
-        # Remove duplicate NAT entries to prevent crash
-        nat_uniq = {}
-        nat_del = {}
+        # uniq-id is kept for the unique id migration and as an attribute;
+        # entities are keyed on the stable .id, so duplicates are fine.
         for uid in self.ds["nat"]:
             self.ds["nat"][uid]["comment"] = str(self.ds["nat"][uid]["comment"])
-
-            tmp_name = self.ds["nat"][uid]["uniq-id"]
-            if tmp_name not in nat_uniq:
-                nat_uniq[tmp_name] = uid
-            else:
-                nat_del[uid] = 1
-                nat_del[nat_uniq[tmp_name]] = 1
-
-        for uid in nat_del:
-            if self.ds["nat"][uid]["uniq-id"] not in self.nat_removed:
-                self.nat_removed[self.ds["nat"][uid]["uniq-id"]] = 1
-                _LOGGER.error(
-                    "Mikrotik %s duplicate NAT rule %s, entity will be unavailable.",
-                    self.host,
-                    self.ds["nat"][uid]["name"],
-                )
-
-            del self.ds["nat"][uid]
 
     # ---------------------------
     #   get_mangle
@@ -1225,29 +1203,10 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             ],
         )
 
-        # Remove duplicate Mangle entries to prevent crash
-        mangle_uniq = {}
-        mangle_del = {}
+        # uniq-id is kept for the unique id migration and as an attribute;
+        # entities are keyed on the stable .id, so duplicates are fine.
         for uid in self.ds["mangle"]:
             self.ds["mangle"][uid]["comment"] = str(self.ds["mangle"][uid]["comment"])
-
-            tmp_name = self.ds["mangle"][uid]["uniq-id"]
-            if tmp_name not in mangle_uniq:
-                mangle_uniq[tmp_name] = uid
-            else:
-                mangle_del[uid] = 1
-                mangle_del[mangle_uniq[tmp_name]] = 1
-
-        for uid in mangle_del:
-            if self.ds["mangle"][uid]["uniq-id"] not in self.mangle_removed:
-                self.mangle_removed[self.ds["mangle"][uid]["uniq-id"]] = 1
-                _LOGGER.error(
-                    "Mikrotik %s duplicate Mangle rule %s, entity will be unavailable.",
-                    self.host,
-                    self.ds["mangle"][uid]["name"],
-                )
-
-            del self.ds["mangle"][uid]
 
     # ---------------------------
     #   get_filter
@@ -1335,30 +1294,10 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             ],
         )
 
-        # Remove duplicate filter entries to prevent crash
-        filter_uniq = {}
-        filter_del = {}
+        # uniq-id is kept for the unique id migration and as an attribute;
+        # entities are keyed on the stable .id, so duplicates are fine.
         for uid in self.ds["filter"]:
             self.ds["filter"][uid]["comment"] = str(self.ds["filter"][uid]["comment"])
-
-            tmp_name = self.ds["filter"][uid]["uniq-id"]
-            if tmp_name not in filter_uniq:
-                filter_uniq[tmp_name] = uid
-            else:
-                filter_del[uid] = 1
-                filter_del[filter_uniq[tmp_name]] = 1
-
-        for uid in filter_del:
-            if self.ds["filter"][uid]["uniq-id"] not in self.filter_removed:
-                self.filter_removed[self.ds["filter"][uid]["uniq-id"]] = 1
-                _LOGGER.error(
-                    "Mikrotik %s duplicate Filter rule %s (ID %s), entity will be unavailable.",
-                    self.host,
-                    self.ds["filter"][uid]["name"],
-                    self.ds["filter"][uid][".id"],
-                )
-
-            del self.ds["filter"][uid]
 
     # ---------------------------
     #   get_kidcontrol
