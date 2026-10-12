@@ -120,6 +120,17 @@ HYSTERESIS_DELTA = 2
 HYSTERESIS_MAX_AGE = 300
 
 
+def _round_rate(rate: float) -> int:
+    """Round a rate to 3 significant figures.
+
+    Throughput jitters in the low digits every poll; this keeps the shown
+    precision (0.1 kB/s up to 999.9 kB/s) and lets steady rates repeat.
+    """
+    rate = round(rate)
+    digits = len(str(abs(rate)))
+    return rate if digits <= 3 else round(rate, 3 - digits)
+
+
 def _split_pair(value, convert, default=0) -> tuple:
     """Split an upload/download pair such as "1000/2000".
 
@@ -985,7 +996,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
 
                 delta_tx = max(0, current_tx - previous_tx)
                 self.ds["interface"][uid]["tx"] = (
-                    round(delta_tx / time_diff) if time_diff else 0.0
+                    _round_rate(delta_tx / time_diff) if time_diff else 0.0
                 )
                 self.ds["interface"][uid]["tx-previous"] = current_tx
 
@@ -994,12 +1005,16 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
 
                 delta_rx = max(0, current_rx - previous_rx)
                 self.ds["interface"][uid]["rx"] = (
-                    round(delta_rx / time_diff) if time_diff else 0.0
+                    _round_rate(delta_rx / time_diff) if time_diff else 0.0
                 )
                 self.ds["interface"][uid]["rx-previous"] = current_rx
 
-                self.ds["interface"][uid]["tx-total"] = current_tx
-                self.ds["interface"][uid]["rx-total"] = current_rx
+                # The totals are total_increasing; statistics do not need
+                # them every poll, so they move with the slow tier.
+                if self._slow_poll or not vals["tx-total"]:
+                    self.ds["interface"][uid]["tx-total"] = current_tx
+                if self._slow_poll or not vals["rx-total"]:
+                    self.ds["interface"][uid]["rx-total"] = current_rx
 
         # Ethernet config (PoE, SFP shutdown temperature) rarely changes:
         # read it in the slow tier, or when a new ether port appears.
@@ -2640,10 +2655,10 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 continue
 
             self.ds["client_traffic"][uid]["wan-tx"] = (
-                round(vals["wan-tx"] / time_diff) if vals["wan-tx"] else 0.0
+                _round_rate(vals["wan-tx"] / time_diff) if vals["wan-tx"] else 0.0
             )
             self.ds["client_traffic"][uid]["wan-rx"] = (
-                round(vals["wan-rx"] / time_diff) if vals["wan-rx"] else 0.0
+                _round_rate(vals["wan-rx"] / time_diff) if vals["wan-rx"] else 0.0
             )
 
             if not local_traffic_enabled:
@@ -2651,10 +2666,10 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 continue
 
             self.ds["client_traffic"][uid]["lan-tx"] = (
-                round(vals["lan-tx"] / time_diff) if vals["lan-tx"] else 0.0
+                _round_rate(vals["lan-tx"] / time_diff) if vals["lan-tx"] else 0.0
             )
             self.ds["client_traffic"][uid]["lan-rx"] = (
-                round(vals["lan-rx"] / time_diff) if vals["lan-rx"] else 0.0
+                _round_rate(vals["lan-rx"] / time_diff) if vals["lan-rx"] else 0.0
             )
 
     # ---------------------------
@@ -2751,12 +2766,12 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             previous_tx = self.ds["client_traffic"][uid]["previous-bytes-up"]
             if time_diff:
                 delta_tx = max(0, current_tx - previous_tx)
-                self.ds["client_traffic"][uid]["tx"] = round(delta_tx / time_diff)
+                self.ds["client_traffic"][uid]["tx"] = _round_rate(delta_tx / time_diff)
             self.ds["client_traffic"][uid]["previous-bytes-up"] = current_tx
 
             current_rx = vals["bytes-down"]
             previous_rx = self.ds["client_traffic"][uid]["previous-bytes-down"]
             if time_diff:
                 delta_rx = max(0, current_rx - previous_rx)
-                self.ds["client_traffic"][uid]["rx"] = round(delta_rx / time_diff)
+                self.ds["client_traffic"][uid]["rx"] = _round_rate(delta_rx / time_diff)
             self.ds["client_traffic"][uid]["previous-bytes-down"] = current_rx

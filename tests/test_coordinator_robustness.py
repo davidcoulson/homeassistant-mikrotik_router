@@ -255,3 +255,31 @@ async def test_tiered_polling(monkeypatch) -> None:
     clock[0] += 300
     await coordinator._async_update_data()
     assert "get_nat" in calls
+
+
+def test_round_rate() -> None:
+    """P5: rates keep 3 significant figures."""
+    from custom_components.mikrotik_router.coordinator import _round_rate
+
+    assert _round_rate(12.4) == 12
+    assert _round_rate(999.6) == 1000
+    assert _round_rate(123456.7) == 123000
+    assert _round_rate(1234) == 1230
+
+
+def test_traffic_totals_follow_slow_tier() -> None:
+    """P5: totals are set at once, then only on slow polls."""
+    rows = [{"default-name": "ether1", "name": "ether1", "type": "ether",
+             "tx-byte": 1000, "rx-byte": 2000}]
+    coordinator = _coordinator({"/interface": rows})
+    coordinator.config_entry = MagicMock(options={"sensor_port_traffic": True})
+    coordinator.interface_traffic_last_run = None
+    coordinator._slow_poll = False
+    coordinator.get_interface()
+    assert coordinator.ds["interface"]["ether1"]["tx-total"] == 1000
+    rows[0]["tx-byte"] = 5000
+    coordinator.get_interface()
+    assert coordinator.ds["interface"]["ether1"]["tx-total"] == 1000
+    coordinator._slow_poll = True
+    coordinator.get_interface()
+    assert coordinator.ds["interface"]["ether1"]["tx-total"] == 5000
