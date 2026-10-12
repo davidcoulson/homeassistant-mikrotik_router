@@ -81,6 +81,38 @@ def is_valid_ip(address):
         return False
 
 
+ETHERNET_MONITOR_VALS = [
+    {"name": "status", "default": "unknown"},
+    {"name": "rate", "default": "unknown"},
+    {"name": "full-duplex", "default": "unknown"},
+    {"name": "auto-negotiation", "default": "unknown"},
+]
+ETHERNET_MONITOR_SFP_VALS = [
+    {"name": "status", "default": "unknown"},
+    {"name": "auto-negotiation", "default": "unknown"},
+    {"name": "rate", "default": "unknown"},
+    {"name": "full-duplex", "default": "unknown"},
+    {"name": "advertising", "default": "unknown"},
+    {"name": "link-partner-advertising", "default": "unknown"},
+    {"name": "sfp-temperature", "default": 0},
+    {"name": "sfp-supply-voltage", "default": "unknown"},
+    {"name": "sfp-module-present", "default": "unknown"},
+    {"name": "sfp-tx-bias-current", "default": "unknown"},
+    {"name": "sfp-tx-power", "default": "unknown"},
+    {"name": "sfp-rx-power", "default": "unknown"},
+    {"name": "sfp-rx-loss", "default": "unknown"},
+    {"name": "sfp-tx-fault", "default": "unknown"},
+    {"name": "sfp-type", "default": "unknown"},
+    {"name": "sfp-connector-type", "default": "unknown"},
+    {"name": "sfp-vendor-name", "default": "unknown"},
+    {"name": "sfp-vendor-part-number", "default": "unknown"},
+    {"name": "sfp-vendor-revision", "default": "unknown"},
+    {"name": "sfp-vendor-serial", "default": "unknown"},
+    {"name": "sfp-manufacturing-date", "default": "unknown"},
+    {"name": "eeprom-checksum", "default": "unknown"},
+]
+
+
 HYSTERESIS_DELTA = 2
 HYSTERESIS_MAX_AGE = 300
 
@@ -349,6 +381,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         self.last_hwinfo_update = datetime(1970, 1, 1)
         self.interface_traffic_last_run = None
         self._published = {}
+        self._monitor_batch = True
         self.rebootcheck = 0
 
     # ---------------------------
@@ -949,6 +982,8 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
 
         # Udpate virtual interfaces
         bonding = False
+        sfp_ports = []
+        copper_ports = []
         for uid, vals in self.ds["interface"].items():
             if self.ds["interface"][uid]["type"] == "bond":
                 bonding = True
@@ -963,60 +998,14 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                     "port-mac-address"
                 ] = f"{vals['port-mac-address']}-{vals['name']}"
 
-            if self.ds["interface"][uid]["type"] == "ether":
-                if (
-                    "sfp-shutdown-temperature" in vals
-                    and vals["sfp-shutdown-temperature"] != ""
-                ):
-                    self.ds["interface"] = parse_api(
-                        data=self.ds["interface"],
-                        source=self.api.query(
-                            "/interface/ethernet",
-                            command="monitor",
-                            args={".id": vals[".id"], "once": True},
-                        ),
-                        key_search="name",
-                        vals=[
-                            {"name": "status", "default": "unknown"},
-                            {"name": "auto-negotiation", "default": "unknown"},
-                            {"name": "rate", "default": "unknown"},
-                            {"name": "full-duplex", "default": "unknown"},
-                            {"name": "advertising", "default": "unknown"},
-                            {"name": "link-partner-advertising", "default": "unknown"},
-                            {"name": "sfp-temperature", "default": 0},
-                            {"name": "sfp-supply-voltage", "default": "unknown"},
-                            {"name": "sfp-module-present", "default": "unknown"},
-                            {"name": "sfp-tx-bias-current", "default": "unknown"},
-                            {"name": "sfp-tx-power", "default": "unknown"},
-                            {"name": "sfp-rx-power", "default": "unknown"},
-                            {"name": "sfp-rx-loss", "default": "unknown"},
-                            {"name": "sfp-tx-fault", "default": "unknown"},
-                            {"name": "sfp-type", "default": "unknown"},
-                            {"name": "sfp-connector-type", "default": "unknown"},
-                            {"name": "sfp-vendor-name", "default": "unknown"},
-                            {"name": "sfp-vendor-part-number", "default": "unknown"},
-                            {"name": "sfp-vendor-revision", "default": "unknown"},
-                            {"name": "sfp-vendor-serial", "default": "unknown"},
-                            {"name": "sfp-manufacturing-date", "default": "unknown"},
-                            {"name": "eeprom-checksum", "default": "unknown"},
-                        ],
-                    )
+            if vals["type"] == "ether" and vals.get(".id"):
+                if vals.get("sfp-shutdown-temperature", "") != "":
+                    sfp_ports.append(vals[".id"])
                 else:
-                    self.ds["interface"] = parse_api(
-                        data=self.ds["interface"],
-                        source=self.api.query(
-                            "/interface/ethernet",
-                            command="monitor",
-                            args={".id": vals[".id"], "once": True},
-                        ),
-                        key_search="name",
-                        vals=[
-                            {"name": "status", "default": "unknown"},
-                            {"name": "rate", "default": "unknown"},
-                            {"name": "full-duplex", "default": "unknown"},
-                            {"name": "auto-negotiation", "default": "unknown"},
-                        ],
-                    )
+                    copper_ports.append(vals[".id"])
+
+        self._monitor_ethernet(sfp_ports, ETHERNET_MONITOR_SFP_VALS)
+        self._monitor_ethernet(copper_ports, ETHERNET_MONITOR_VALS)
 
         if bonding:
             self.ds["bonding"] = parse_api(
@@ -1036,6 +1025,51 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 for tmp in vals["slaves"].split(","):
                     self.ds["bonding_slaves"][tmp] = vals
                     self.ds["bonding_slaves"][tmp]["master"] = uid
+
+    # ---------------------------
+    #   _monitor_ethernet
+    # ---------------------------
+    def _monitor_ethernet(self, port_ids, vals) -> None:
+        """Read link and SFP status for ethernet ports.
+
+        One monitor call covers all ports; if the router refuses a list,
+        fall back to one call per port from then on.
+        """
+        if not port_ids or not self.api.connected():
+            return
+
+        if self._monitor_batch:
+            source = self.api.query(
+                "/interface/ethernet",
+                command="monitor",
+                args={"numbers": ",".join(port_ids), "once": True},
+                ignore_trap=True,
+            )
+            if source is not None:
+                self.ds["interface"] = parse_api(
+                    data=self.ds["interface"],
+                    source=source,
+                    key_search="name",
+                    vals=vals,
+                )
+                return
+
+            if not self.api.connected():
+                return
+            _LOGGER.debug("Batched ethernet monitor refused, using one call per port")
+            self._monitor_batch = False
+
+        for port_id in port_ids:
+            self.ds["interface"] = parse_api(
+                data=self.ds["interface"],
+                source=self.api.query(
+                    "/interface/ethernet",
+                    command="monitor",
+                    args={".id": port_id, "once": True},
+                ),
+                key_search="name",
+                vals=vals,
+            )
 
     # ---------------------------
     #   get_bridge

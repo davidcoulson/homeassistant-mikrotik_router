@@ -140,3 +140,49 @@ def test_cpu_load_and_temperature_hysteresis(monkeypatch) -> None:
     assert publish("health", "cpu-temperature", "46") == "46"
     assert publish("resource", "cpu-load", "unknown") == "unknown"
     assert publish("resource", "cpu-load", 13) == 13
+
+
+def _monitor_coordinator(batch_ok):
+    calls = []
+
+    def query(path, command=None, args=None, **kw):
+        calls.append(args)
+        if path == "/interface":
+            return [
+                {"default-name": f"ether{i}", "name": f"ether{i}", ".id": f"*{i}",
+                 "type": "ether"}
+                for i in (1, 2, 3)
+            ]
+        if path == "/interface/ethernet" and command == "monitor":
+            if "numbers" in args:
+                if not batch_ok:
+                    return None
+                return [{"name": f"ether{i}", "status": "link-ok"} for i in (1, 2, 3)]
+            return [{"name": f"ether{args['.id'][1:]}", "status": "no-link"}]
+        return None
+
+    coordinator = _coordinator()
+    coordinator.api.query.side_effect = query
+    coordinator.config_entry = MagicMock(options={})
+    coordinator.interface_traffic_last_run = None
+    coordinator._monitor_batch = True
+    return coordinator, calls
+
+
+def test_ethernet_monitor_is_batched() -> None:
+    """P2: one monitor call for all ports."""
+    coordinator, calls = _monitor_coordinator(batch_ok=True)
+    coordinator.get_interface()
+    monitor = [c for c in calls if c and "once" in c]
+    assert monitor == [{"numbers": "*1,*2,*3", "once": True}]
+    assert coordinator.ds["interface"]["ether2"]["status"] == "link-ok"
+
+
+def test_ethernet_monitor_falls_back_per_port() -> None:
+    coordinator, calls = _monitor_coordinator(batch_ok=False)
+    coordinator.get_interface()
+    assert coordinator._monitor_batch is False
+    assert coordinator.ds["interface"]["ether3"]["status"] == "no-link"
+    calls.clear()
+    coordinator.get_interface()
+    assert not [c for c in calls if c and "numbers" in c]
