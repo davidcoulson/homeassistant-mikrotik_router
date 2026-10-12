@@ -118,3 +118,18 @@ def test_extra_attributes_do_not_linger() -> None:
     assert entity.extra_state_attributes["dst_port"] == "443"
     del row["dst-port"]
     assert "dst_port" not in entity.extra_state_attributes
+
+
+async def test_fetch_changelogs_prereleases():
+    """L4: rc/beta builds keep their suffix for changelog URLs."""
+    session = _Session({"7.20rc2", "7.20rc3", "7.20"})
+    assert await fetch_changelogs(session, "7.20rc2", "7.20rc3 (testing)") == [
+        "- 7.20rc3"
+    ]
+    assert await fetch_changelogs(session, "7.20rc3", "7.20rc3") == []
+    # Stable after an rc: the stable changelog is new
+    assert await fetch_changelogs(session, "7.20rc3", "7.20 (stable)") == ["- 7.20"]
+    # Stable to rc fetches the rc changelog, not the stable one
+    session.requested.clear()
+    assert await fetch_changelogs(session, "7.19", "7.20rc2") == ["- 7.20rc2"]
+    assert session.requested == ["7.20rc2"]

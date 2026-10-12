@@ -77,6 +77,26 @@ def normalize_routeros_version(version: str) -> str:
 
 
 # ---------------------------
+#   routeros_release_name
+# ---------------------------
+ROUTEROS_RELEASE_PATTERN = re.compile(
+    r"(\d+\.\d+(?:\.\d+)?)((?:alpha|beta|rc)\d+)?", re.IGNORECASE
+)
+
+
+def routeros_release_name(version: str) -> tuple[str, str]:
+    """Return (release, prerelease suffix), e.g. '7.20rc2' -> ('7.20', 'rc2').
+
+    The suffix is empty for stable releases. Unlike normalize_routeros_version,
+    this keeps rc/beta builds apart for changelog URLs.
+    """
+    match = ROUTEROS_RELEASE_PATTERN.search(str(version))
+    if not match:
+        raise ValueError(f"Version format is not recognized: {version}")
+    return match.group(1), (match.group(2) or "").lower()
+
+
+# ---------------------------
 #   parse_routeros_major_minor
 # ---------------------------
 def parse_routeros_major_minor(version: str) -> tuple[int, int]:
