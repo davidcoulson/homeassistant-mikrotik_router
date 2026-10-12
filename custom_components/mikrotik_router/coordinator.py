@@ -1823,6 +1823,8 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             prune=True,
             source=self.api.query("/system/script/environment"),
             key="name",
+            # Scripts often keep tokens in globals
+            redact={"value"},
             vals=[
                 {"name": "name"},
                 {"name": "value"},

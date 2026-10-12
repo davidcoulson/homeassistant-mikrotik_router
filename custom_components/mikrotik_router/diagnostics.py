@@ -45,7 +45,8 @@ UNIQUE_ID_SENSITIVE_FIELDS = MAC_ADDRESS_FIELDS | {
     "caller-id",
     "target",
 }
-RUNTIME_TO_REDACT = TO_REDACT - MAC_ADDRESS_FIELDS
+# Comments are free text and often name people or places
+RUNTIME_TO_REDACT = (TO_REDACT - MAC_ADDRESS_FIELDS) | {"comment"}
 
 
 def _fake_mac_address(value: Any, mac_addresses: dict[str, str]) -> Any:
@@ -185,6 +186,34 @@ def _redact_sensitive_identifiers(
     return redacted
 
 
+def _redact_private_paths(data: Any, redacted_keys: dict[str, str]) -> Any:
+    """Redact data paths whose values are private as a whole.
+
+    Environment values may hold secrets, static DNS names and restored host
+    names identify devices and people.
+    """
+    if not isinstance(data, Mapping):
+        return data
+
+    data = dict(data)
+    if isinstance(environment := data.get("environment"), Mapping):
+        data["environment"] = {
+            name: {**record, "value": REDACTED} if isinstance(record, Mapping) else record
+            for name, record in environment.items()
+        }
+    if isinstance(host_hass := data.get("host_hass"), Mapping):
+        data["host_hass"] = dict.fromkeys(host_hass, REDACTED)
+    if isinstance(dns := data.get("dns"), Mapping):
+        redacted_dns = {}
+        for name, record in dns.items():
+            redacted_name = _redacted_identifier(str(name), redacted_keys)
+            if isinstance(record, Mapping):
+                record = {**record, "name": redacted_name}
+            redacted_dns[redacted_name] = record
+        data["dns"] = redacted_dns
+    return data
+
+
 def _redact_runtime_data(
     data: Any,
     mac_addresses: dict[str, str],
@@ -192,7 +221,9 @@ def _redact_runtime_data(
 ) -> Any:
     """Redact sensitive runtime values and mapping keys."""
     return async_redact_data(
-        _redact_sensitive_identifiers(data, mac_addresses, redacted_keys),
+        _redact_sensitive_identifiers(
+            _redact_private_paths(data, redacted_keys), mac_addresses, redacted_keys
+        ),
         RUNTIME_TO_REDACT,
     )
 
