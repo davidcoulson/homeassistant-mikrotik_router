@@ -1183,28 +1183,27 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 self.ds["interface"][uid]["client-mac-address"] = "disabled"
             return
 
+        # Index ARP by interface once instead of scanning it per interface
+        arp_by_interface = {}
+        for arp_vals in self.ds["arp"].values():
+            arp_by_interface.setdefault(arp_vals["interface"], []).append(arp_vals)
+
         for uid, vals in self.ds["interface"].items():
-            self.ds["interface"][uid]["client-ip-address"] = ""
-            self.ds["interface"][uid]["client-mac-address"] = ""
-            for arp_uid, arp_vals in self.ds["arp"].items():
-                if arp_vals["interface"] != vals["name"] and not (
-                    vals["name"] in self.ds["bonding_slaves"]
-                    and self.ds["bonding_slaves"][vals["name"]]["master"]
-                    == arp_vals["interface"]
-                ):
-                    continue
+            clients = list(arp_by_interface.get(vals["name"], ()))
+            if vals["name"] in self.ds["bonding_slaves"]:
+                master = self.ds["bonding_slaves"][vals["name"]]["master"]
+                if master != vals["name"]:
+                    clients += arp_by_interface.get(master, ())
 
-                if self.ds["interface"][uid]["client-ip-address"] == "":
-                    self.ds["interface"][uid]["client-ip-address"] = arp_vals["address"]
-                else:
-                    self.ds["interface"][uid]["client-ip-address"] = "multiple"
-
-                if self.ds["interface"][uid]["client-mac-address"] == "":
-                    self.ds["interface"][uid]["client-mac-address"] = arp_vals[
-                        "mac-address"
-                    ]
-                else:
-                    self.ds["interface"][uid]["client-mac-address"] = "multiple"
+            if not clients:
+                vals["client-ip-address"] = ""
+                vals["client-mac-address"] = ""
+            elif len(clients) == 1:
+                vals["client-ip-address"] = clients[0]["address"]
+                vals["client-mac-address"] = clients[0]["mac-address"]
+            else:
+                vals["client-ip-address"] = "multiple"
+                vals["client-mac-address"] = "multiple"
 
             if self.ds["interface"][uid]["client-ip-address"] == "":
                 if self.ds["interface"][uid]["name"] in self.ds["dhcp-client"]:

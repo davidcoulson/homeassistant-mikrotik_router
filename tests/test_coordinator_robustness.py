@@ -320,3 +320,37 @@ def test_arp_table_is_swapped_not_resized() -> None:
     coordinator.get_arp()
     assert set(old) == {"AA"}
     assert set(coordinator.ds["arp"]) == {"BB"}
+
+
+def test_interface_clients_from_arp_index() -> None:
+    """Item 21: one ARP index gives the same client columns."""
+    coordinator = _coordinator()
+    coordinator.config_entry = MagicMock(options={"track_iface_clients": True})
+    coordinator.ds.update(
+        {
+            "interface": {
+                "ether1": {"name": "ether1"},
+                "ether2": {"name": "ether2"},
+                "ether3": {"name": "ether3"},
+                "ether4": {"name": "ether4"},
+            },
+            "arp": {
+                "A": {"interface": "ether1", "address": "10.0.0.2",
+                      "mac-address": "A"},
+                "B": {"interface": "bond1", "address": "10.0.0.3",
+                      "mac-address": "B"},
+                "C": {"interface": "bond1", "address": "10.0.0.4",
+                      "mac-address": "C"},
+            },
+            "bonding_slaves": {"ether2": {"master": "bond1"}},
+            "dhcp-client": {"ether3": {"address": "192.0.2.1"}},
+        }
+    )
+    coordinator.process_interface_client()
+    iface = coordinator.ds["interface"]
+    assert iface["ether1"]["client-ip-address"] == "10.0.0.2"
+    assert iface["ether1"]["client-mac-address"] == "A"
+    assert iface["ether2"]["client-ip-address"] == "multiple"
+    assert iface["ether3"]["client-ip-address"] == "192.0.2.1"
+    assert iface["ether3"]["client-mac-address"] == "none"
+    assert iface["ether4"]["client-ip-address"] == "none"
