@@ -38,7 +38,7 @@ def from_entry(entry, param, default="") -> str:
     else:
         return default
 
-    if default != "":
+    if default != "" and not isinstance(ret, bool):
         if isinstance(ret, str):
             ret = str(ret)
         elif isinstance(ret, int):
@@ -176,11 +176,7 @@ def get_uid(entry, key, key_secondary, key_search, keymap) -> Optional(str):
     """Get UID for data list."""
     uid = None
     if not key_search:
-        key_primary_found = key in entry
-        if key_primary_found and key not in entry and not entry[key]:
-            return None
-
-        if key_primary_found:
+        if entry.get(key):
             uid = entry[key]
         elif key_secondary:
             if key_secondary not in entry:
