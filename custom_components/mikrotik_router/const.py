@@ -39,6 +39,10 @@ DEFAULT_TRACK_HOSTS = False
 CONF_TRACK_HOSTS_TIMEOUT = "track_network_hosts_timeout"
 DEFAULT_TRACK_HOST_TIMEOUT = 180
 MAX_TRACK_HOST_TIMEOUT = 86400
+# Read-only: no entity or API call may change the router. Off for existing
+# entries so their behaviour doesn't change.
+CONF_READ_ONLY = "read_only"
+DEFAULT_READ_ONLY = False
 
 CONF_SENSOR_PORT_TRACKER = "sensor_port_tracker"
 DEFAULT_SENSOR_PORT_TRACKER = False

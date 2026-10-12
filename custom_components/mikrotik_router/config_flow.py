@@ -66,6 +66,8 @@ from .const import (
     DEFAULT_VERIFY_SSL,
     DEFAULT_SENSOR_NETWATCH_TRACKER,
     CONF_SENSOR_NETWATCH_TRACKER,
+    CONF_READ_ONLY,
+    DEFAULT_READ_ONLY,
 )
 from .helper import router_unique_id
 from .mikrotikapi import MikrotikAPI
@@ -85,6 +87,8 @@ def validate_input(user_input):
         port=user_input[CONF_PORT],
         use_ssl=user_input[CONF_SSL],
         ssl_verify=user_input[CONF_VERIFY_SSL],
+        # Validation only reads
+        read_only=True,
     )
     try:
         return _validate_with_api(api, user_input)
@@ -205,8 +209,13 @@ class MikrotikControllerConfigFlow(ConfigFlow, domain=DOMAIN):
 
             # Save instance
             if not errors:
+                # Read-only is an option, so it can be changed later
+                data = dict(user_input)
+                read_only = data.pop(CONF_READ_ONLY, DEFAULT_READ_ONLY)
                 return self.async_create_entry(
-                    title=user_input[CONF_NAME], data=user_input
+                    title=user_input[CONF_NAME],
+                    data=data,
+                    options={CONF_READ_ONLY: read_only},
                 )
 
             return self._show_config_form(user_input=user_input, errors=errors)
@@ -220,6 +229,7 @@ class MikrotikControllerConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_PORT: DEFAULT_PORT,
                 CONF_SSL: DEFAULT_SSL,
                 CONF_VERIFY_SSL: DEFAULT_VERIFY_SSL,
+                CONF_READ_ONLY: DEFAULT_READ_ONLY,
             },
             errors=errors,
         )
@@ -339,6 +349,10 @@ class MikrotikControllerConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Optional(
                         CONF_VERIFY_SSL, default=user_input[CONF_VERIFY_SSL]
                     ): bool,
+                    vol.Optional(
+                        CONF_READ_ONLY,
+                        default=user_input.get(CONF_READ_ONLY, DEFAULT_READ_ONLY),
+                    ): bool,
                 }
             ),
             errors=errors,
@@ -396,6 +410,12 @@ class MikrotikControllerOptionsFlowHandler(OptionsFlow):
             last_step=False,
             data_schema=vol.Schema(
                 {
+                    vol.Optional(
+                        CONF_READ_ONLY,
+                        default=self.config_entry.options.get(
+                            CONF_READ_ONLY, DEFAULT_READ_ONLY
+                        ),
+                    ): bool,
                     vol.Optional(
                         CONF_SCAN_INTERVAL,
                         default=self.config_entry.options.get(

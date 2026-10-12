@@ -24,6 +24,12 @@ A Home Assistant custom integration (HACS) for MikroTik RouterOS. It talks to th
 - `*_types.py`: entity descriptions per platform (`ha_group`, `data_path`, `data_reference`, ...).
 - `__init__.py`: entry setup. It registers the router device first and stores `runtime_data.router_device_id`.
 
+## Read-only mode and interface statistics
+
+- `read_only` option (`CONF_READ_ONLY`, default off, also on the user step where it's stored in `options`). When on: `switch.py`/`button.py` add nothing, update entities lose INSTALL/BACKUP, `binary_sensor_types.READ_ONLY_STATE_TYPES` (switch descriptions with a `_state` key suffix) show switch state, and `_async_remove_read_only_mismatches` drops switch/button registry entries (or the `_state` sensors when the option goes off).
+- Safety net: `MikrotikAPI(read_only=True)` makes `set_value`, `execute`, `run_script`, the accounting `snapshot/take` and any `query(command=...)` other than `monitor`/`print` raise `ApiReadOnly` before touching the socket. `async_run_routeros` turns it into a `ServiceValidationError`. Read-only entries skip `check-for-updates` and v6 accounting. `tests/test_read_only.py` checks that every public `MikrotikAPI` method is listed as a read or a guarded write; add new methods there.
+- Interface traffic (`sensor_port_traffic`, still off by default): `_update_interface_traffic` publishes once per `TRAFFIC_RATE_INTERVAL` (60 s, 10% early tolerance). Throughput (`traffic_rx`/`traffic_tx`, unique ids unchanged) is the byte delta × 8 / elapsed in bit/s, suggested Mbit/s, with an unrecorded `formatted` attribute. A counter that goes backwards counts from zero. `INTERFACE_COUNTERS` lists the published counters (bytes, packets, errors, drops, tx-queue-drop). Link speed/duplex come from the ethernet monitor, last link change from `last-link-*-time` (HA time zone assumed). The port `Connection` binary sensor appears with either the port tracker or the port traffic option.
+
 ## Device model
 
 - Entities with `ha_group == "System"` go on the router device. Its identifier (`runtime_data.router_identifier`) is `(DOMAIN, serial)`, or `(DOMAIN, entry_id)` when there is no valid serial (CHR/x86 report "N/A"); a placeholder device is re-keyed in place.
@@ -46,7 +52,7 @@ A Home Assistant custom integration (HACS) for MikroTik RouterOS. It talks to th
 
 - `pytest` (config in `pytest.ini`, asyncio auto mode). It needs `pytest-homeassistant-custom-component` (tested with `==0.13.372`, HA 2026.10.1, Python 3.14) plus `librouteros` and `mac-vendor-lookup`. Use a venv in the scratchpad, not the repo.
 - `flake8` (config in `setup.cfg`, max line 220) and `bandit` run in CI (`.github/workflows/ci.yml`).
-- Tests: `tests/test_devices.py` (child devices, legacy migration, orphan cleanup, and a check that every entity description links to the router), `test_mikrotikapi.py`, `test_fixes.py`, `test_capabilities.py`, plus one file per fix area (`test_tracker.py`, `test_security.py`, `test_router_identity.py`, `test_firewall_ids.py`, `test_commands.py`, `test_coordinator_robustness.py`, `test_diagnostic_sensors.py`, ...). Coordinator methods are tested on `object.__new__(MikrotikCoordinator)` with a mocked `api.query`.
+- Tests: `tests/test_devices.py` (child devices, legacy migration, orphan cleanup, and a check that every entity description links to the router), `test_mikrotikapi.py`, `test_fixes.py`, `test_capabilities.py`, plus one file per fix area (`test_tracker.py`, `test_security.py`, `test_router_identity.py`, `test_firewall_ids.py`, `test_commands.py`, `test_coordinator_robustness.py`, `test_diagnostic_sensors.py`, `test_read_only.py`, `test_interface_traffic.py`, ...). Coordinator methods are tested on `object.__new__(MikrotikCoordinator)` with a mocked `api.query`.
 
 ## Tooling
 

@@ -31,7 +31,13 @@ from homeassistant.const import (
 )
 from homeassistant.util import slugify
 
-from .const import PLATFORMS, DOMAIN, LEGACY_VERIFY_SSL
+from .const import (
+    PLATFORMS,
+    DOMAIN,
+    LEGACY_VERIFY_SSL,
+    CONF_READ_ONLY,
+    DEFAULT_READ_ONLY,
+)
 from .coordinator import (
     MikrotikConfigEntry,
     MikrotikData,
@@ -43,7 +49,10 @@ from .helper import (
     child_device_identifier,
     router_unique_id,
 )
-from .binary_sensor_types import SENSOR_TYPES as BINARY_SENSOR_TYPES
+from .binary_sensor_types import (
+    READ_ONLY_STATE_TYPES,
+    SENSOR_TYPES as BINARY_SENSOR_TYPES,
+)
 from .button_types import SENSOR_TYPES as BUTTON_TYPES
 from .sensor_types import SENSOR_TYPES as SENSOR_PLATFORM_TYPES
 from .switch_types import SENSOR_TYPES as SWITCH_TYPES
@@ -131,6 +140,7 @@ async def async_setup_entry(
         hass, config_entry, coordinator
     )
     _async_migrate_child_devices(hass, config_entry, coordinator, router_device_id)
+    _async_remove_read_only_mismatches(hass, config_entry)
     coordinatorTracker = MikrotikTrackerCoordinator(hass, config_entry, coordinator)
     apis.append(coordinatorTracker.api)
     await coordinatorTracker.async_config_entry_first_refresh()
@@ -371,6 +381,44 @@ def _async_migrate_child_devices(
             registry.async_update_device(
                 device.id, new_identifiers=device.identifiers | identifiers
             )
+
+
+# ---------------------------
+#   _async_remove_read_only_mismatches
+# ---------------------------
+# Platforms whose entities all write to the router
+WRITE_PLATFORMS = (Platform.SWITCH, Platform.BUTTON)
+
+
+@callback
+def _async_remove_read_only_mismatches(
+    hass: HomeAssistant, config_entry: MikrotikConfigEntry
+) -> None:
+    """Remove registry entries that don't fit the read-only option.
+
+    Read-only entries lose their switches and buttons, so nothing left in the
+    registry can change the router. Without the option, the read-only state
+    binary sensors that stood in for the switches go. Empty devices are
+    removed afterwards by _async_remove_orphaned_devices.
+    """
+    read_only = config_entry.options.get(CONF_READ_ONLY, DEFAULT_READ_ONLY)
+    prefix = f"{config_entry.data[CONF_NAME].lower()}-"
+    state_prefixes = tuple(
+        f"{prefix}{description.key}-" for description in READ_ONLY_STATE_TYPES
+    )
+    ent_reg = entity_registry.async_get(hass)
+    for entry in entity_registry.async_entries_for_config_entry(
+        ent_reg, config_entry.entry_id
+    ):
+        if read_only:
+            remove = entry.domain in WRITE_PLATFORMS
+        else:
+            remove = entry.domain == Platform.BINARY_SENSOR and str(
+                entry.unique_id
+            ).startswith(state_prefixes)
+        if remove:
+            _LOGGER.debug("Removing %s (read-only %s)", entry.entity_id, read_only)
+            ent_reg.async_remove(entry.entity_id)
 
 
 # ---------------------------

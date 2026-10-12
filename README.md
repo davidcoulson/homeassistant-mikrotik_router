@@ -201,6 +201,7 @@ NOTES:
 First options page:
 
 ![Integration options](https://raw.githubusercontent.com/tomaae/homeassistant-mikrotik_router/master/docs/assets/images/ui/integration_options.png)
+* "Read-only (no changes to the router)" - Monitor only. Removes every switch and button (port, NAT, mangle, filter, queue, kid control, PPP, scripts), shows their state as binary sensors instead, hides firmware install and makes the RouterOS API connection refuse all writes. Off by default
 * "Scan interval" - Scan/refresh time in seconds. Interval changes are applied when options are saved
 * "Device tracker scan interval" - Time in seconds between active reachability checks for tracked network devices
 * "Unit of measurement" - Traffic sensor measurement (bps, Kbps, Mbps, B/s, KB/s, MB/s)
@@ -212,6 +213,11 @@ Second options page:
 ![Integration sensors](https://raw.githubusercontent.com/tomaae/homeassistant-mikrotik_router/master/docs/assets/images/ui/integration_options_sensors.png)
 
 Select sensors you want to use in Home Assistant.
+
+"Port traffic and statistics sensors" adds SNMP-style sensors to each interface device:
+* RX/TX throughput: the byte-counter delta over a window of about 60 s, in bit/s (shown in Mbit/s by default; the `formatted` attribute auto-scales, e.g. "12.3 Mbit/s"). To show a different unit, open the entity's settings and change "Unit of measurement" to bit/s, kbit/s, Mbit/s or Gbit/s.
+* RX/TX total bytes, RX/TX errors and drops, link status, link speed and last link change (enabled by default)
+* RX/TX packets, TX queue drops, link downs and duplex (disabled by default; enable them on the entity)
 
 # Development
 

@@ -531,9 +531,10 @@ SENSOR_TYPES: tuple[MikrotikSensorEntityDescription, ...] = (
         key="traffic_tx",
         name="TX",
         icon="mdi:upload-network-outline",
-        native_unit_of_measurement=UnitOfDataRate.BYTES_PER_SECOND,
-        suggested_unit_of_measurement=UnitOfDataRate.KILOBYTES_PER_SECOND,
-        suggested_display_precision=1,
+        # Average over the ~60 s traffic window, in bit/s like SNMP pollers
+        native_unit_of_measurement=UnitOfDataRate.BITS_PER_SECOND,
+        suggested_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+        suggested_display_precision=2,
         device_class=SensorDeviceClass.DATA_RATE,
         state_class=SensorStateClass.MEASUREMENT,
         entity_category=None,
@@ -552,9 +553,10 @@ SENSOR_TYPES: tuple[MikrotikSensorEntityDescription, ...] = (
         key="traffic_rx",
         name="RX",
         icon="mdi:download-network-outline",
-        native_unit_of_measurement=UnitOfDataRate.BYTES_PER_SECOND,
-        suggested_unit_of_measurement=UnitOfDataRate.KILOBYTES_PER_SECOND,
-        suggested_display_precision=1,
+        # Average over the ~60 s traffic window, in bit/s like SNMP pollers
+        native_unit_of_measurement=UnitOfDataRate.BITS_PER_SECOND,
+        suggested_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+        suggested_display_precision=2,
         device_class=SensorDeviceClass.DATA_RATE,
         state_class=SensorStateClass.MEASUREMENT,
         entity_category=None,
@@ -821,6 +823,89 @@ WIRELESS_HOST_SENSORS = (
         SensorDeviceClass.DATA_RATE,
     ),
 )
+
+# IF-MIB style interface counters and link state. They need the port traffic
+# option, like the throughput and total sensors, and move once per traffic
+# window (about a minute). Key, name, data attribute, enabled by default.
+INTERFACE_COUNTER_SENSORS = (
+    ("rx-packets", "RX packets", "rx-packets", False),
+    ("tx-packets", "TX packets", "tx-packets", False),
+    ("rx-errors", "RX errors", "rx-errors", True),
+    ("tx-errors", "TX errors", "tx-errors", True),
+    ("rx-drops", "RX drops", "rx-drops", True),
+    ("tx-drops", "TX drops", "tx-drops", True),
+    ("tx-queue-drops", "TX queue drops", "tx-queue-drops", False),
+)
+
+_INTERFACE_SENSOR_COMMON = {
+    "ha_group": "data__default-name",
+    "ha_connection": CONNECTION_NETWORK_MAC,
+    "ha_connection_value": "data__port-mac-address",
+    "data_path": "interface",
+    "data_name": "default-name",
+    "data_uid": "",
+    "data_reference": "default-name",
+    "func": "MikrotikInterfaceStatSensor",
+}
+
+SENSOR_TYPES += tuple(
+    MikrotikSensorEntityDescription(
+        key=key,
+        name=name,
+        icon="mdi:counter",
+        native_unit_of_measurement="packets",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=enabled,
+        data_attribute=attribute,
+        **_INTERFACE_SENSOR_COMMON,
+    )
+    for key, name, attribute, enabled in INTERFACE_COUNTER_SENSORS
+) + (
+    MikrotikSensorEntityDescription(
+        key="link-downs",
+        name="Link downs",
+        icon="mdi:lan-disconnect",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        data_attribute="link-downs",
+        **_INTERFACE_SENSOR_COMMON,
+    ),
+    MikrotikSensorEntityDescription(
+        key="link-speed",
+        name="Link speed",
+        icon="mdi:speedometer",
+        native_unit_of_measurement=UnitOfDataRate.MEGABITS_PER_SECOND,
+        device_class=SensorDeviceClass.DATA_RATE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        data_attribute="link-speed",
+        **_INTERFACE_SENSOR_COMMON,
+    ),
+    MikrotikSensorEntityDescription(
+        key="duplex",
+        name="Duplex",
+        icon="mdi:swap-horizontal",
+        device_class=SensorDeviceClass.ENUM,
+        options=["full", "half"],
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        data_attribute="duplex",
+        **_INTERFACE_SENSOR_COMMON,
+    ),
+    MikrotikSensorEntityDescription(
+        key="last-link-change",
+        name="Last link change",
+        icon="mdi:clock-outline",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        data_attribute="last-link-change",
+        **_INTERFACE_SENSOR_COMMON,
+    ),
+)
+
+# Interface sensors that exist only for ethernet ports (the monitor reports them)
+ETHERNET_ONLY_SENSORS = frozenset({"link-speed", "duplex"})
 
 SENSOR_TYPES += tuple(
     MikrotikSensorEntityDescription(

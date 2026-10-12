@@ -17,7 +17,7 @@ from homeassistant.components.update import (
 )
 
 from .coordinator import MikrotikConfigEntry, MikrotikCoordinator
-from .entity import MikrotikEntity, async_add_entities
+from .entity import MikrotikEntity, async_add_entities, is_read_only
 from .helper import routeros_release_name
 from .update_types import (
     SENSOR_TYPES,
@@ -67,9 +67,11 @@ class MikrotikRouterOSUpdate(MikrotikEntity, UpdateEntity):
         """Set up device update entity."""
         super().__init__(coordinator, entity_description, uid)
 
-        self._attr_supported_features = UpdateEntityFeature.INSTALL
-        self._attr_supported_features |= UpdateEntityFeature.BACKUP
-        self._attr_supported_features |= UpdateEntityFeature.RELEASE_NOTES
+        # Read-only entries show the update but can't install it
+        self._attr_supported_features = UpdateEntityFeature.RELEASE_NOTES
+        if not is_read_only(coordinator.config_entry):
+            self._attr_supported_features |= UpdateEntityFeature.INSTALL
+            self._attr_supported_features |= UpdateEntityFeature.BACKUP
         self._attr_title = self.entity_description.title
 
     @property
@@ -156,7 +158,11 @@ class MikrotikRouterBoardFWUpdate(MikrotikEntity, UpdateEntity):
         """Set up device update entity."""
         super().__init__(coordinator, entity_description, uid)
 
-        self._attr_supported_features = UpdateEntityFeature.INSTALL
+        self._attr_supported_features = (
+            UpdateEntityFeature(0)
+            if is_read_only(coordinator.config_entry)
+            else UpdateEntityFeature.INSTALL
+        )
         self._attr_title = self.entity_description.title
 
     @property

@@ -9,14 +9,14 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coordinator import MikrotikConfigEntry, MikrotikCoordinator
 from .entity import MikrotikEntity, async_add_entities
-from .helper import format_attribute
+from .helper import format_attribute, format_data_rate
 from .sensor_types import (
     SENSOR_TYPES,
     SENSOR_SERVICES,
@@ -40,6 +40,7 @@ async def async_setup_entry(
     dispatcher = {
         "MikrotikSensor": MikrotikSensor,
         "MikrotikInterfaceTrafficSensor": MikrotikInterfaceTrafficSensor,
+        "MikrotikInterfaceStatSensor": MikrotikInterfaceStatSensor,
         "MikrotikClientTrafficSensor": MikrotikClientTrafficSensor,
         "MikrotikDiagnosticSensor": MikrotikDiagnosticSensor,
     }
@@ -95,10 +96,17 @@ class MikrotikSensor(MikrotikEntity, SensorEntity):
 class MikrotikInterfaceTrafficSensor(MikrotikSensor):
     """Define an Mikrotik MikrotikInterfaceTrafficSensor sensor."""
 
+    # Changes with every traffic window; the state already holds the value
+    _unrecorded_attributes = frozenset({"formatted"})
+
     @property
     def extra_state_attributes(self) -> Mapping[str, Any]:
         """Return the state attributes."""
         attributes = super().extra_state_attributes
+
+        # HA can't auto-scale one entity's unit; show a scaled value too
+        if self.entity_description.device_class == SensorDeviceClass.DATA_RATE:
+            attributes["formatted"] = format_data_rate(self.native_value)
 
         if self._data["type"] == "ether":
             for variable in DEVICE_ATTRIBUTES_IFACE_ETHER:
@@ -116,6 +124,18 @@ class MikrotikInterfaceTrafficSensor(MikrotikSensor):
                     attributes[format_attribute(variable)] = self._data[variable]
 
         return attributes
+
+
+# ---------------------------
+#   MikrotikInterfaceStatSensor
+# ---------------------------
+class MikrotikInterfaceStatSensor(MikrotikSensor):
+    """An interface counter or link reading; unknown until RouterOS reports it."""
+
+    @property
+    def native_value(self) -> StateType | datetime:
+        """Return the value reported by the sensor."""
+        return self._data.get(self.entity_description.data_attribute)
 
 
 # ---------------------------

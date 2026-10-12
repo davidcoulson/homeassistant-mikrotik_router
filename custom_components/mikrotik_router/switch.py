@@ -13,7 +13,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN
 from .coordinator import MikrotikConfigEntry
-from .entity import MikrotikEntity, async_add_entities
+from .entity import MikrotikEntity, async_add_entities, is_read_only
 from .helper import format_attribute
 from .switch_types import (
     SENSOR_TYPES,
@@ -33,6 +33,10 @@ async def async_setup_entry(
     add_entities_callback: AddEntitiesCallback,
 ) -> None:
     """Set up entry for component"""
+    # Every switch writes to the router; read-only entries have none
+    if is_read_only(config_entry):
+        return
+
     dispatcher = {
         "MikrotikSwitch": MikrotikSwitch,
         "MikrotikPortSwitch": MikrotikPortSwitch,

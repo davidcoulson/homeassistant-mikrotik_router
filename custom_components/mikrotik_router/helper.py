@@ -54,6 +54,28 @@ def format_attribute(attr):
 
 
 # ---------------------------
+#   format_data_rate
+# ---------------------------
+_DATA_RATE_UNITS = ("bit/s", "kbit/s", "Mbit/s", "Gbit/s", "Tbit/s")
+
+
+def format_data_rate(bits_per_second) -> str | None:
+    """Format a bit rate with an auto-scaled unit, such as "12.3 Mbit/s"."""
+    if not isinstance(bits_per_second, (int, float)) or isinstance(
+        bits_per_second, bool
+    ):
+        return None
+    value = float(bits_per_second)
+    unit = 0
+    while abs(value) >= 1000 and unit < len(_DATA_RATE_UNITS) - 1:
+        value /= 1000
+        unit += 1
+    if unit == 0:
+        return f"{value:.0f} {_DATA_RATE_UNITS[0]}"
+    return f"{value:.3g} {_DATA_RATE_UNITS[unit]}"
+
+
+# ---------------------------
 #   format_value
 # ---------------------------
 def format_value(res):

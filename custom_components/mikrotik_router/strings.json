@@ -11,7 +11,11 @@
                     "username": "Username",
                     "password": "Password",
                     "ssl": "Use SSL",
-                    "verify_ssl": "Verify SSL"
+                    "verify_ssl": "Verify SSL",
+                    "read_only": "Read-only (no changes to the router)"
+                },
+                "data_description": {
+                    "read_only": "Hide all switches and buttons and refuse every RouterOS write. Use it to monitor the router without letting Home Assistant change it."
                 }
             },
             "reauth_confirm": {
@@ -73,6 +77,9 @@
         },
         "routeros_command_failed": {
             "message": "The router did not complete the requested action. Check the connection and RouterOS permissions."
+        },
+        "read_only": {
+            "message": "This Mikrotik Router entry is read-only, so it can't change the router. Turn off the read-only option to allow changes."
         }
     },
     "options": {
@@ -83,17 +90,21 @@
                     "device_tracker_scan_interval": "Device tracker scan interval",
                     "track_iface_clients": "Show client MAC and IP on interfaces",
                     "unit_of_measurement": "Unit of measurement",
-                    "track_network_hosts_timeout": "Track network devices timeout (seconds)"
+                    "track_network_hosts_timeout": "Track network devices timeout (seconds)",
+                    "read_only": "Read-only (no changes to the router)"
                 },
                 "title": "Mikrotik Router options (1/2)",
-                "description": "Configure integration"
+                "description": "Configure integration",
+                "data_description": {
+                    "read_only": "Removes all switches and buttons (port, NAT, mangle, filter, queue, kid control, PPP, scripts), shows their state as binary sensors, and blocks firmware installs. Every RouterOS write is refused."
+                }
             },
             "sensor_select": {
                 "data": {
                     "track_network_hosts": "Track network devices",
                     "sensor_port_tracker": "Port tracker sensors",
                     "sensor_netwatch_tracker": "Netwatch tracker sensors",
-                    "sensor_port_traffic": "Port traffic sensors",
+                    "sensor_port_traffic": "Port traffic and statistics sensors",
                     "sensor_client_traffic": "Client traffic sensors",
                     "sensor_client_captive": "Captive portal data",
                     "sensor_simple_queues": "Simple queues switches",

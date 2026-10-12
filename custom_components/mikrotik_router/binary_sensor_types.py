@@ -12,6 +12,7 @@ from homeassistant.components.binary_sensor import (
 )
 
 from .const import DOMAIN
+from .switch_types import SENSOR_TYPES as SWITCH_TYPES
 
 DEVICE_ATTRIBUTES_PPP_SECRET = [
     "connected",
@@ -206,6 +207,30 @@ SENSOR_TYPES: tuple[BinarySensorEntityDescription, ...] = (
         data_attributes_list=DEVICE_ATTRIBUTES_NETWATCH,
         func="MikrotikBinarySensor",
     ),
+)
+
+# Read-only entries have no switches. These show the same state (port,
+# rule, queue, ... enabled) without a way to change it. The "_state" key
+# suffix keeps their unique ids apart from the existing binary sensors.
+READ_ONLY_STATE_TYPES: tuple[MikrotikBinarySensorEntityDescription, ...] = tuple(
+    MikrotikBinarySensorEntityDescription(
+        key=f"{switch.key}_state",
+        name=switch.name,
+        icon_enabled=switch.icon_enabled,
+        icon_disabled=switch.icon_disabled,
+        entity_category=switch.entity_category,
+        ha_group=switch.ha_group,
+        ha_connection=switch.ha_connection,
+        ha_connection_value=switch.ha_connection_value,
+        data_path=switch.data_path,
+        data_attribute=switch.data_attribute,
+        data_name=switch.data_name,
+        data_name_comment=switch.data_name_comment,
+        data_uid=switch.data_uid,
+        data_reference=switch.data_reference,
+        data_attributes_list=switch.data_attributes_list,
+    )
+    for switch in SWITCH_TYPES
 )
 
 SENSOR_SERVICES = {}

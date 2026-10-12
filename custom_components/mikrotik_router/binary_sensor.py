@@ -13,6 +13,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .binary_sensor_types import (
     SENSOR_TYPES,
     SENSOR_SERVICES,
+    READ_ONLY_STATE_TYPES,
     DEVICE_ATTRIBUTES_IFACE_ETHER,
     DEVICE_ATTRIBUTES_IFACE_SFP,
     DEVICE_ATTRIBUTES_IFACE_WIRELESS,
@@ -27,7 +28,7 @@ from .const import (
     DEFAULT_SENSOR_NETWATCH_TRACKER,
 )
 from .coordinator import MikrotikConfigEntry
-from .entity import MikrotikEntity, async_add_entities
+from .entity import MikrotikEntity, async_add_entities, is_read_only
 from .helper import format_attribute
 
 _LOGGER = getLogger(__name__)
@@ -52,7 +53,9 @@ async def async_setup_entry(
         config_entry,
         add_entities_callback,
         dispatcher,
-        SENSOR_TYPES,
+        SENSOR_TYPES + READ_ONLY_STATE_TYPES
+        if is_read_only(config_entry)
+        else SENSOR_TYPES,
         SENSOR_SERVICES,
     )
 

@@ -11,7 +11,7 @@ from .const import (
     DEFAULT_LOGIN_METHOD,
     DEFAULT_ENCODING,
 )
-from .exceptions import ApiEntryNotFound
+from .exceptions import ApiEntryNotFound, ApiReadOnly
 
 import librouteros
 from librouteros.exceptions import MultiTrapError, TrapError
@@ -20,6 +20,9 @@ _LOGGER = logging.getLogger(__name__)
 
 # Socket timeout in seconds. Longer than the 10 s check-for-updates command.
 API_TIMEOUT = 15
+
+# Commands query() may run on a read-only connection. They only report state.
+READ_ONLY_COMMANDS = frozenset({"monitor", "print"})
 
 
 # ---------------------------
@@ -39,6 +42,7 @@ class MikrotikAPI:
         login_method=DEFAULT_LOGIN_METHOD,
         encoding=DEFAULT_ENCODING,
         timeout=API_TIMEOUT,
+        read_only=False,
     ):
         """Initialize the Mikrotik Client."""
         self._host = host
@@ -50,6 +54,8 @@ class MikrotikAPI:
         self._login_method = login_method
         self._encoding = encoding
         self._timeout = timeout
+        # Safety net for the read-only option: every write path refuses
+        self.read_only = read_only
         self._ssl_wrapper = None
         # API operations can call query() or connect() while holding the lock.
         self.lock = RLock()
@@ -362,6 +368,15 @@ class MikrotikAPI:
         return self._connected
 
     # ---------------------------
+    #   _refuse_if_read_only
+    # ---------------------------
+    def _refuse_if_read_only(self, action: str) -> None:
+        """Raise ApiReadOnly when this connection must not change the router."""
+        if self.read_only:
+            _LOGGER.warning("Refused RouterOS %s on read-only entry %s", action, self._host)
+            raise ApiReadOnly(action)
+
+    # ---------------------------
     #   query
     # ---------------------------
     def query(
@@ -379,6 +394,9 @@ class MikrotikAPI:
 
         if args is None:
             args = {}
+
+        if command and command not in READ_ONLY_COMMANDS:
+            self._refuse_if_read_only(f"{path} {command}")
 
         if not self.connection_check():
             return None
@@ -449,6 +467,7 @@ class MikrotikAPI:
     # ---------------------------
     def set_value(self, path, param, value, mod_param, mod_value) -> bool:
         """Modify a parameter"""
+        self._refuse_if_read_only(f"set {path}")
         # A librouteros path is lazy, so its lookup and update must share a lock.
         with self.lock:
             entry_found = None
@@ -487,6 +506,7 @@ class MikrotikAPI:
     # ---------------------------
     def execute(self, path, command, param, value, attributes=None) -> bool:
         """Execute a command"""
+        self._refuse_if_read_only(f"{path} {command}")
         # Keep the optional lookup and command on the same socket transaction.
         with self.lock:
             entry_found = None
@@ -532,6 +552,7 @@ class MikrotikAPI:
     # ---------------------------
     def run_script(self, name) -> bool:
         """Run script"""
+        self._refuse_if_read_only(f"script {name}")
         # Lookup and run share one lock so a reconnect can't swap the socket.
         with self.lock:
             entry_found = None
@@ -637,6 +658,9 @@ class MikrotikAPI:
     # ---------------------------
     def take_client_traffic_snapshot(self, use_accounting) -> float:
         """Tako accounting snapshot and return time diff"""
+        if use_accounting:
+            self._refuse_if_read_only("/ip/accounting snapshot/take")
+
         if not self.connection_check():
             return 0
 

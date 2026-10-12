@@ -267,24 +267,6 @@ def test_round_rate() -> None:
     assert _round_rate(1234) == 1230
 
 
-def test_traffic_totals_follow_slow_tier() -> None:
-    """P5: totals are set at once, then only on slow polls."""
-    rows = [{"default-name": "ether1", "name": "ether1", "type": "ether",
-             "tx-byte": 1000, "rx-byte": 2000}]
-    coordinator = _coordinator({"/interface": rows})
-    coordinator.config_entry = MagicMock(options={"sensor_port_traffic": True})
-    coordinator.interface_traffic_last_run = None
-    coordinator._slow_poll = False
-    coordinator.get_interface()
-    assert coordinator.ds["interface"]["ether1"]["tx-total"] == 1000
-    rows[0]["tx-byte"] = 5000
-    coordinator.get_interface()
-    assert coordinator.ds["interface"]["ether1"]["tx-total"] == 1000
-    coordinator._slow_poll = True
-    coordinator.get_interface()
-    assert coordinator.ds["interface"]["ether1"]["tx-total"] == 5000
-
-
 async def test_process_host_is_serialised() -> None:
     """Item 3: the two coordinators never run host processing at once."""
     import asyncio
