@@ -10,7 +10,7 @@ from homeassistant.components.switch import (
     SwitchEntityDescription,
 )
 
-from .const import DOMAIN
+from .const import DOMAIN, WRITE_PATH_CHANGES
 
 DEVICE_ATTRIBUTES_IFACE = [
     "running",
@@ -324,5 +324,12 @@ SENSOR_TYPES: tuple[MikrotikSwitchEntityDescription, ...] = (
         func="MikrotikKidcontrolPauseSwitch",
     ),
 )
+
+
+
+def switch_change(description: MikrotikSwitchEntityDescription) -> str:
+    """Return the kind of change a switch makes on the router."""
+    return WRITE_PATH_CHANGES[description.data_switch_path]
+
 
 SENSOR_SERVICES = {}

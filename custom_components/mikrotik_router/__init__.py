@@ -35,8 +35,7 @@ from .const import (
     PLATFORMS,
     DOMAIN,
     LEGACY_VERIFY_SSL,
-    CONF_READ_ONLY,
-    DEFAULT_READ_ONLY,
+    CHANGE_SCRIPTS,
 )
 from .coordinator import (
     MikrotikConfigEntry,
@@ -46,16 +45,17 @@ from .coordinator import (
 )
 from .helper import (
     INVALID_ROUTER_IDENTIFIERS,
+    allowed_changes,
     child_device_identifier,
     router_unique_id,
 )
 from .binary_sensor_types import (
-    READ_ONLY_STATE_TYPES,
+    SWITCH_STATE_CHANGES,
     SENSOR_TYPES as BINARY_SENSOR_TYPES,
 )
 from .button_types import SENSOR_TYPES as BUTTON_TYPES
 from .sensor_types import SENSOR_TYPES as SENSOR_PLATFORM_TYPES
-from .switch_types import SENSOR_TYPES as SWITCH_TYPES
+from .switch_types import SENSOR_TYPES as SWITCH_TYPES, switch_change
 from .binary_sensor_types import SENSOR_SERVICES as BINARY_SENSOR_SERVICES
 from .button_types import SENSOR_SERVICES as BUTTON_SERVICES
 from .device_tracker_types import SENSOR_SERVICES as DEVICE_TRACKER_SERVICES
@@ -140,7 +140,7 @@ async def async_setup_entry(
         hass, config_entry, coordinator
     )
     _async_migrate_child_devices(hass, config_entry, coordinator, router_device_id)
-    _async_remove_read_only_mismatches(hass, config_entry)
+    _async_remove_disallowed_changes(hass, config_entry)
     coordinatorTracker = MikrotikTrackerCoordinator(hass, config_entry, coordinator)
     apis.append(coordinatorTracker.api)
     await coordinatorTracker.async_config_entry_first_refresh()
@@ -384,40 +384,50 @@ def _async_migrate_child_devices(
 
 
 # ---------------------------
-#   _async_remove_read_only_mismatches
+#   _async_remove_disallowed_changes
 # ---------------------------
-# Platforms whose entities all write to the router
-WRITE_PLATFORMS = (Platform.SWITCH, Platform.BUTTON)
-
-
 @callback
-def _async_remove_read_only_mismatches(
+def _async_remove_disallowed_changes(
     hass: HomeAssistant, config_entry: MikrotikConfigEntry
 ) -> None:
-    """Remove registry entries that don't fit the read-only option.
+    """Remove registry entries that don't fit the allowed changes option.
 
-    Read-only entries lose their switches and buttons, so nothing left in the
-    registry can change the router. Without the option, the read-only state
-    binary sensors that stood in for the switches go. Empty devices are
-    removed afterwards by _async_remove_orphaned_devices.
+    Switches for a kind of change that isn't allowed go, and buttons go
+    without script changes, so nothing left in the registry can make a
+    change the option forbids. The state binary sensors that stand in for
+    switches go once their kind of change is allowed again. Empty devices
+    are removed afterwards by _async_remove_orphaned_devices.
     """
-    read_only = config_entry.options.get(CONF_READ_ONLY, DEFAULT_READ_ONLY)
+    allowed = allowed_changes(config_entry.options)
     prefix = f"{config_entry.data[CONF_NAME].lower()}-"
-    state_prefixes = tuple(
-        f"{prefix}{description.key}-" for description in READ_ONLY_STATE_TYPES
-    )
+    switch_prefixes = {
+        f"{prefix}{description.key}-": switch_change(description)
+        for description in SWITCH_TYPES
+    }
+    state_prefixes = {
+        f"{prefix}{key}-": change for key, change in SWITCH_STATE_CHANGES.items()
+    }
     ent_reg = entity_registry.async_get(hass)
     for entry in entity_registry.async_entries_for_config_entry(
         ent_reg, config_entry.entry_id
     ):
-        if read_only:
-            remove = entry.domain in WRITE_PLATFORMS
+        unique_id = str(entry.unique_id)
+        if entry.domain == Platform.BUTTON:
+            remove = CHANGE_SCRIPTS not in allowed
+        elif entry.domain == Platform.SWITCH:
+            remove = any(
+                unique_id.startswith(switch_prefix) and change not in allowed
+                for switch_prefix, change in switch_prefixes.items()
+            )
+        elif entry.domain == Platform.BINARY_SENSOR:
+            remove = any(
+                unique_id.startswith(state_prefix) and change in allowed
+                for state_prefix, change in state_prefixes.items()
+            )
         else:
-            remove = entry.domain == Platform.BINARY_SENSOR and str(
-                entry.unique_id
-            ).startswith(state_prefixes)
+            remove = False
         if remove:
-            _LOGGER.debug("Removing %s (read-only %s)", entry.entity_id, read_only)
+            _LOGGER.debug("Removing %s (change not allowed)", entry.entity_id)
             ent_reg.async_remove(entry.entity_id)
 
 

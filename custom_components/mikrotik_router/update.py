@@ -17,8 +17,9 @@ from homeassistant.components.update import (
 )
 
 from .coordinator import MikrotikConfigEntry, MikrotikCoordinator
-from .entity import MikrotikEntity, async_add_entities, is_read_only
-from .helper import routeros_release_name
+from .const import CHANGE_FIRMWARE
+from .entity import MikrotikEntity, async_add_entities
+from .helper import allowed_changes, routeros_release_name
 from .update_types import (
     SENSOR_TYPES,
     SENSOR_SERVICES,
@@ -67,9 +68,9 @@ class MikrotikRouterOSUpdate(MikrotikEntity, UpdateEntity):
         """Set up device update entity."""
         super().__init__(coordinator, entity_description, uid)
 
-        # Read-only entries show the update but can't install it
+        # Without firmware changes the update shows but can't be installed
         self._attr_supported_features = UpdateEntityFeature.RELEASE_NOTES
-        if not is_read_only(coordinator.config_entry):
+        if CHANGE_FIRMWARE in allowed_changes(coordinator.config_entry.options):
             self._attr_supported_features |= UpdateEntityFeature.INSTALL
             self._attr_supported_features |= UpdateEntityFeature.BACKUP
         self._attr_title = self.entity_description.title
@@ -159,9 +160,9 @@ class MikrotikRouterBoardFWUpdate(MikrotikEntity, UpdateEntity):
         super().__init__(coordinator, entity_description, uid)
 
         self._attr_supported_features = (
-            UpdateEntityFeature(0)
-            if is_read_only(coordinator.config_entry)
-            else UpdateEntityFeature.INSTALL
+            UpdateEntityFeature.INSTALL
+            if CHANGE_FIRMWARE in allowed_changes(coordinator.config_entry.options)
+            else UpdateEntityFeature(0)
         )
         self._attr_title = self.entity_description.title
 

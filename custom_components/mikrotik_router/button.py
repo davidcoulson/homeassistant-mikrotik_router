@@ -6,7 +6,9 @@ from homeassistant.components.button import ButtonEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .entity import MikrotikEntity, async_add_entities, is_read_only
+from .const import CHANGE_SCRIPTS
+from .entity import MikrotikEntity, async_add_entities
+from .helper import allowed_changes
 from .coordinator import MikrotikConfigEntry
 from .button_types import (
     SENSOR_TYPES,
@@ -23,8 +25,8 @@ async def async_setup_entry(
     add_entities_callback: AddEntitiesCallback,
 ) -> None:
     """Set up entry for component"""
-    # Every button writes to the router; read-only entries have none
-    if is_read_only(config_entry):
+    # Every button runs a script on the router
+    if CHANGE_SCRIPTS not in allowed_changes(config_entry.options):
         return
 
     dispatcher = {

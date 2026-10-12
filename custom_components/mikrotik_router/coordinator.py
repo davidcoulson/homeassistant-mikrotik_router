@@ -19,7 +19,7 @@ from homeassistant.helpers import entity_registry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util.dt import get_default_time_zone, utcnow
 
-from .helper import parse_routeros_major_minor, track_hosts_timeout
+from .helper import allowed_changes, parse_routeros_major_minor, track_hosts_timeout
 
 
 from homeassistant.const import (
@@ -43,8 +43,8 @@ from .const import (
     CONF_DEVICE_TRACKER_SCAN_INTERVAL,
     DEFAULT_DEVICE_TRACKER_SCAN_INTERVAL,
     CONF_SENSOR_PORT_TRAFFIC,
-    CONF_READ_ONLY,
-    DEFAULT_READ_ONLY,
+    CHANGE_ACCOUNTING,
+    CHANGE_FIRMWARE,
     DEFAULT_SENSOR_PORT_TRAFFIC,
     CONF_SENSOR_CLIENT_TRAFFIC,
     DEFAULT_SENSOR_CLIENT_TRAFFIC,
@@ -271,7 +271,7 @@ class MikrotikTrackerCoordinator(DataUpdateCoordinator[None]):
             config_entry.data[CONF_PORT],
             config_entry.data[CONF_SSL],
             config_entry.data[CONF_VERIFY_SSL],
-            read_only=config_entry.options.get(CONF_READ_ONLY, DEFAULT_READ_ONLY),
+            allowed_changes=allowed_changes(config_entry.options),
         )
 
     # ---------------------------
@@ -438,7 +438,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             config_entry.data[CONF_PORT],
             config_entry.data[CONF_SSL],
             config_entry.data[CONF_VERIFY_SSL],
-            read_only=config_entry.options.get(CONF_READ_ONLY, DEFAULT_READ_ONLY),
+            allowed_changes=allowed_changes(config_entry.options),
         )
 
         self.debug = False
@@ -515,12 +515,12 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         )
 
     # ---------------------------
-    #   option_read_only
+    #   option_allowed_changes
     # ---------------------------
     @property
-    def option_read_only(self) -> bool:
-        """Config entry option: never change the router."""
-        return self.config_entry.options.get(CONF_READ_ONLY, DEFAULT_READ_ONLY)
+    def option_allowed_changes(self) -> frozenset[str]:
+        """Config entry option: the kinds of change allowed on the router."""
+        return allowed_changes(self.config_entry.options)
 
     # ---------------------------
     #   option_sensor_client_traffic
@@ -902,8 +902,11 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             await self.hass.async_add_executor_job(self.get_ppp)
 
         if self.api.connected() and self.option_sensor_client_traffic:
-            # Accounting needs "snapshot/take", a write, so not when read-only
-            if 0 < self.major_fw_version < 7 and not self.option_read_only:
+            # Accounting needs "snapshot/take", a write
+            if (
+                0 < self.major_fw_version < 7
+                and CHANGE_ACCOUNTING in self.option_allowed_changes
+            ):
                 await self.hass.async_add_executor_job(self.process_accounting)
             elif 0 < self.major_fw_version >= 7:
                 await self.hass.async_add_executor_job(self.process_kid_control_devices)
@@ -1913,9 +1916,9 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         ):
             return
 
-        # check-for-updates is a command; read-only entries only read the
-        # status of the router's own last check.
-        if not self.option_read_only:
+        # check-for-updates is a command; without firmware changes only read
+        # the status of the router's own last check.
+        if CHANGE_FIRMWARE in self.option_allowed_changes:
             self.execute(
                 "/system/package/update",
                 "check-for-updates",

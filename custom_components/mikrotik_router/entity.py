@@ -30,8 +30,6 @@ from .const import (
     DEFAULT_SENSOR_PORT_TRACKER,
     CONF_SENSOR_NETWATCH_TRACKER,
     DEFAULT_SENSOR_NETWATCH_TRACKER,
-    CONF_READ_ONLY,
-    DEFAULT_READ_ONLY,
 )
 from .coordinator import (
     MikrotikConfigEntry,
@@ -43,11 +41,6 @@ from .helper import child_device_identifier, format_attribute
 from .sensor_types import ETHERNET_ONLY_SENSORS
 
 _LOGGER = getLogger(__name__)
-
-
-def is_read_only(config_entry) -> bool:
-    """Return whether the entry must never change the router."""
-    return config_entry.options.get(CONF_READ_ONLY, DEFAULT_READ_ONLY) is True
 
 
 def _skip_sensor(config_entry, entity_description, data, uid) -> bool:
@@ -233,18 +226,15 @@ class MikrotikEntity(CoordinatorEntity[_MikrotikCoordinatorT], Entity):
         waits here instead of filling the shared executor with jobs that only
         block on the API lock (M10).
         """
-        if is_read_only(self._config_entry):
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="read_only",
-            )
+        # The API refuses writes the allowed changes option doesn't permit
         try:
             async with self.coordinator.command_lock:
                 result = await self.hass.async_add_executor_job(target, *args)
         except ApiReadOnly as error:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
-                translation_key="read_only",
+                translation_key="change_not_allowed",
+                translation_placeholders={"action": str(error)},
             ) from error
         except ApiEntryNotFound as error:
             raise ServiceValidationError(

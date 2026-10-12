@@ -66,8 +66,9 @@ from .const import (
     DEFAULT_VERIFY_SSL,
     DEFAULT_SENSOR_NETWATCH_TRACKER,
     CONF_SENSOR_NETWATCH_TRACKER,
-    CONF_READ_ONLY,
-    DEFAULT_READ_ONLY,
+    ALL_CHANGES,
+    CONF_ALLOWED_CHANGES,
+    DEFAULT_ALLOWED_CHANGES,
 )
 from .helper import router_unique_id
 from .mikrotikapi import MikrotikAPI
@@ -88,7 +89,7 @@ def validate_input(user_input):
         use_ssl=user_input[CONF_SSL],
         ssl_verify=user_input[CONF_VERIFY_SSL],
         # Validation only reads
-        read_only=True,
+        allowed_changes=(),
     )
     try:
         return _validate_with_api(api, user_input)
@@ -209,13 +210,13 @@ class MikrotikControllerConfigFlow(ConfigFlow, domain=DOMAIN):
 
             # Save instance
             if not errors:
-                # Read-only is an option, so it can be changed later
+                # Allowed changes are an option, so they can be changed later
                 data = dict(user_input)
-                read_only = data.pop(CONF_READ_ONLY, DEFAULT_READ_ONLY)
+                allowed = data.pop(CONF_ALLOWED_CHANGES, DEFAULT_ALLOWED_CHANGES)
                 return self.async_create_entry(
                     title=user_input[CONF_NAME],
                     data=data,
-                    options={CONF_READ_ONLY: read_only},
+                    options={CONF_ALLOWED_CHANGES: allowed},
                 )
 
             return self._show_config_form(user_input=user_input, errors=errors)
@@ -229,7 +230,7 @@ class MikrotikControllerConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_PORT: DEFAULT_PORT,
                 CONF_SSL: DEFAULT_SSL,
                 CONF_VERIFY_SSL: DEFAULT_VERIFY_SSL,
-                CONF_READ_ONLY: DEFAULT_READ_ONLY,
+                CONF_ALLOWED_CHANGES: DEFAULT_ALLOWED_CHANGES,
             },
             errors=errors,
         )
@@ -350,9 +351,18 @@ class MikrotikControllerConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_VERIFY_SSL, default=user_input[CONF_VERIFY_SSL]
                     ): bool,
                     vol.Optional(
-                        CONF_READ_ONLY,
-                        default=user_input.get(CONF_READ_ONLY, DEFAULT_READ_ONLY),
-                    ): bool,
+                        CONF_ALLOWED_CHANGES,
+                        default=user_input.get(
+                            CONF_ALLOWED_CHANGES, DEFAULT_ALLOWED_CHANGES
+                        ),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=list(ALL_CHANGES),
+                            multiple=True,
+                            mode=selector.SelectSelectorMode.LIST,
+                            translation_key=CONF_ALLOWED_CHANGES,
+                        )
+                    ),
                 }
             ),
             errors=errors,
@@ -411,11 +421,18 @@ class MikrotikControllerOptionsFlowHandler(OptionsFlow):
             data_schema=vol.Schema(
                 {
                     vol.Optional(
-                        CONF_READ_ONLY,
+                        CONF_ALLOWED_CHANGES,
                         default=self.config_entry.options.get(
-                            CONF_READ_ONLY, DEFAULT_READ_ONLY
+                            CONF_ALLOWED_CHANGES, DEFAULT_ALLOWED_CHANGES
                         ),
-                    ): bool,
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=list(ALL_CHANGES),
+                            multiple=True,
+                            mode=selector.SelectSelectorMode.LIST,
+                            translation_key=CONF_ALLOWED_CHANGES,
+                        )
+                    ),
                     vol.Optional(
                         CONF_SCAN_INTERVAL,
                         default=self.config_entry.options.get(

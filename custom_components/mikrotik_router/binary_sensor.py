@@ -13,7 +13,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .binary_sensor_types import (
     SENSOR_TYPES,
     SENSOR_SERVICES,
-    READ_ONLY_STATE_TYPES,
+    SWITCH_STATE_CHANGES,
+    SWITCH_STATE_TYPES,
     DEVICE_ATTRIBUTES_IFACE_ETHER,
     DEVICE_ATTRIBUTES_IFACE_SFP,
     DEVICE_ATTRIBUTES_IFACE_WIRELESS,
@@ -28,8 +29,8 @@ from .const import (
     DEFAULT_SENSOR_NETWATCH_TRACKER,
 )
 from .coordinator import MikrotikConfigEntry
-from .entity import MikrotikEntity, async_add_entities, is_read_only
-from .helper import format_attribute
+from .entity import MikrotikEntity, async_add_entities
+from .helper import allowed_changes, format_attribute
 
 _LOGGER = getLogger(__name__)
 
@@ -43,6 +44,13 @@ async def async_setup_entry(
     add_entities_callback: AddEntitiesCallback,
 ) -> None:
     """Set up entry for component"""
+    # Switches whose kind of change isn't allowed show as binary sensors
+    allowed = allowed_changes(config_entry.options)
+    state_types = tuple(
+        description
+        for description in SWITCH_STATE_TYPES
+        if SWITCH_STATE_CHANGES[description.key] not in allowed
+    )
     dispatcher = {
         "MikrotikBinarySensor": MikrotikBinarySensor,
         "MikrotikPPPSecretBinarySensor": MikrotikPPPSecretBinarySensor,
@@ -53,9 +61,7 @@ async def async_setup_entry(
         config_entry,
         add_entities_callback,
         dispatcher,
-        SENSOR_TYPES + READ_ONLY_STATE_TYPES
-        if is_read_only(config_entry)
-        else SENSOR_TYPES,
+        SENSOR_TYPES + state_types,
         SENSOR_SERVICES,
     )
 

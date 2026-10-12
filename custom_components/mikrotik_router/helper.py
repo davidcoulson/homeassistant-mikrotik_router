@@ -10,7 +10,10 @@ from datetime import timedelta
 from homeassistant.util import slugify
 
 from .const import (
+    ALL_CHANGES,
+    CONF_ALLOWED_CHANGES,
     CONF_TRACK_HOSTS_TIMEOUT,
+    DEFAULT_ALLOWED_CHANGES,
     DEFAULT_PORT,
     DEFAULT_TRACK_HOST_TIMEOUT,
     DOMAIN,
@@ -51,6 +54,17 @@ def format_attribute(attr):
     res = res.replace(" ", "_")
     res = res.lower()
     return res
+
+
+# ---------------------------
+#   allowed_changes
+# ---------------------------
+def allowed_changes(options: Mapping) -> frozenset[str]:
+    """Return the kinds of change Home Assistant may make on the router."""
+    value = options.get(CONF_ALLOWED_CHANGES, DEFAULT_ALLOWED_CHANGES)
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return frozenset(ALL_CHANGES)
+    return frozenset(value) & frozenset(ALL_CHANGES)
 
 
 # ---------------------------
