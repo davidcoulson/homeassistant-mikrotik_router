@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from logging import getLogger
+import re
 from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal
@@ -40,6 +41,7 @@ async def async_setup_entry(
         "MikrotikSensor": MikrotikSensor,
         "MikrotikInterfaceTrafficSensor": MikrotikInterfaceTrafficSensor,
         "MikrotikClientTrafficSensor": MikrotikClientTrafficSensor,
+        "MikrotikDiagnosticSensor": MikrotikDiagnosticSensor,
     }
     await async_add_entities(
         hass,
@@ -114,6 +116,28 @@ class MikrotikInterfaceTrafficSensor(MikrotikSensor):
                     attributes[format_attribute(variable)] = self._data[variable]
 
         return attributes
+
+
+# ---------------------------
+#   MikrotikDiagnosticSensor
+# ---------------------------
+_LEADING_NUMBER = re.compile(r"^\s*(-?\d+(?:\.\d+)?)")
+
+
+class MikrotikDiagnosticSensor(MikrotikSensor):
+    """A numeric reading RouterOS reports as text, like "-65@6Mbps"."""
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the leading number of the value, or None."""
+        value = self._data.get(self.entity_description.data_attribute)
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return value
+        if isinstance(value, str) and (match := _LEADING_NUMBER.match(value)):
+            return float(match.group(1))
+        return None
 
 
 # ---------------------------

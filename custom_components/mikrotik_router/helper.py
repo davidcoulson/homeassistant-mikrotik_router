@@ -4,10 +4,43 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from collections.abc import Mapping
+from datetime import timedelta
 
-from .const import DEFAULT_PORT
+from homeassistant.util import slugify
+
+from .const import (
+    CONF_TRACK_HOSTS_TIMEOUT,
+    DEFAULT_PORT,
+    DEFAULT_TRACK_HOST_TIMEOUT,
+    DOMAIN,
+    MAX_TRACK_HOST_TIMEOUT,
+)
 
 INVALID_ROUTER_IDENTIFIERS = {"", "n/a", "none", "unknown"}
+
+
+# ---------------------------
+#   track_hosts_timeout
+# ---------------------------
+def track_hosts_timeout(options: Mapping) -> timedelta:
+    """Return the host presence timeout, clamped to a sane range."""
+    try:
+        seconds = int(options.get(CONF_TRACK_HOSTS_TIMEOUT, DEFAULT_TRACK_HOST_TIMEOUT))
+    except (TypeError, ValueError):
+        seconds = DEFAULT_TRACK_HOST_TIMEOUT
+    return timedelta(seconds=min(max(seconds, 1), MAX_TRACK_HOST_TIMEOUT))
+
+
+# ---------------------------
+#   child_device_identifier
+# ---------------------------
+def child_device_identifier(
+    entry_id: str, group: str, key: str | None = None
+) -> tuple[str, str]:
+    """Return the identifier of a child device of the router device."""
+    suffix = slugify(group) if key is None else f"{slugify(group)}-{key}"
+    return (DOMAIN, f"{entry_id}-{suffix}")
 
 
 # ---------------------------
@@ -41,6 +74,26 @@ def normalize_routeros_version(version: str) -> str:
     if not match:
         raise ValueError(f"Version format is not recognized: {version}")
     return match.group(1)
+
+
+# ---------------------------
+#   routeros_release_name
+# ---------------------------
+ROUTEROS_RELEASE_PATTERN = re.compile(
+    r"(\d+\.\d+(?:\.\d+)?)((?:alpha|beta|rc)\d+)?", re.IGNORECASE
+)
+
+
+def routeros_release_name(version: str) -> tuple[str, str]:
+    """Return (release, prerelease suffix), e.g. '7.20rc2' -> ('7.20', 'rc2').
+
+    The suffix is empty for stable releases. Unlike normalize_routeros_version,
+    this keeps rc/beta builds apart for changelog URLs.
+    """
+    match = ROUTEROS_RELEASE_PATTERN.search(str(version))
+    if not match:
+        raise ValueError(f"Version format is not recognized: {version}")
+    return match.group(1), (match.group(2) or "").lower()
 
 
 # ---------------------------

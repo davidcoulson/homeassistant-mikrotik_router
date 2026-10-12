@@ -90,7 +90,7 @@ class MikrotikSwitch(MikrotikEntity, SwitchEntity, RestoreEntity):
         await self.async_run_routeros(
             self.coordinator.set_value, path, param, value, mod_param, False
         )
-        await self.coordinator.async_refresh()
+        await self.coordinator.async_request_full_refresh()
 
     async def async_turn_off(self) -> None:
         """Turn off the switch."""
@@ -103,7 +103,7 @@ class MikrotikSwitch(MikrotikEntity, SwitchEntity, RestoreEntity):
         await self.async_run_routeros(
             self.coordinator.set_value, path, param, value, mod_param, True
         )
-        await self.coordinator.async_refresh()
+        await self.coordinator.async_request_full_refresh()
 
 
 # ---------------------------
@@ -149,9 +149,15 @@ class MikrotikPortSwitch(MikrotikSwitch):
 
     async def async_turn_on(self) -> None:
         """Turn on the switch."""
-        self.require_access("write")
+        await self._async_set_port(True)
 
-        path = self.entity_description.data_switch_path
+    async def async_turn_off(self) -> None:
+        """Turn off the switch."""
+        await self._async_set_port(False)
+
+    async def _async_set_port(self, enabled: bool) -> None:
+        """Enable or disable the port and its PoE output in one job."""
+        self.require_access("write")
         param = self.entity_description.data_reference
         if self._data["about"] == "managed by CAPsMAN":
             raise ServiceValidationError(
@@ -159,203 +165,44 @@ class MikrotikPortSwitch(MikrotikSwitch):
                 translation_key="managed_by_capsman",
                 translation_placeholders={"entity": str(self._data[param])},
             )
+
         if "-" in self._data["port-mac-address"]:
             param = "name"
         value = self._data[self.entity_description.data_reference]
-        mod_param = self.entity_description.data_switch_parameter
-        await self.async_run_routeros(
-            self.coordinator.set_value, path, param, value, mod_param, False
-        )
+        poe_out = self._data.get("poe-out")
+        if enabled and poe_out == "off":
+            poe_out = "auto-on"
+        elif not enabled and poe_out == "auto-on":
+            poe_out = "off"
+        else:
+            poe_out = None
 
-        if "poe-out" in self._data and self._data["poe-out"] == "off":
-            path = "/interface/ethernet"
-            await self.async_run_routeros(
-                self.coordinator.set_value,
-                path,
+        def set_port() -> bool:
+            # Both changes run under the coordinator's command lock, so two
+            # overlapping toggles can't interleave (L3).
+            if not self.coordinator.set_value(
+                self.entity_description.data_switch_path,
                 param,
                 value,
-                "poe-out",
-                "auto-on",
+                self.entity_description.data_switch_parameter,
+                not enabled,
+            ):
+                return False
+            if poe_out is None:
+                return True
+            return self.coordinator.set_value(
+                "/interface/ethernet", param, value, "poe-out", poe_out
             )
 
-        await self.coordinator.async_refresh()
-
-    async def async_turn_off(self) -> None:
-        """Turn off the switch."""
-        self.require_access("write")
-
-        path = self.entity_description.data_switch_path
-        param = self.entity_description.data_reference
-        if self._data["about"] == "managed by CAPsMAN":
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="managed_by_capsman",
-                translation_placeholders={"entity": str(self._data[param])},
-            )
-        if "-" in self._data["port-mac-address"]:
-            param = "name"
-        value = self._data[self.entity_description.data_reference]
-        mod_param = self.entity_description.data_switch_parameter
-        await self.async_run_routeros(
-            self.coordinator.set_value, path, param, value, mod_param, True
-        )
-
-        if "poe-out" in self._data and self._data["poe-out"] == "auto-on":
-            path = "/interface/ethernet"
-            await self.async_run_routeros(
-                self.coordinator.set_value, path, param, value, "poe-out", "off"
-            )
-
-        await self.coordinator.async_refresh()
+        await self.async_run_routeros(set_port)
+        await self.coordinator.async_request_full_refresh()
 
 
-# ---------------------------
-#   MikrotikNATSwitch
-# ---------------------------
-class MikrotikNATSwitch(MikrotikSwitch):
-    """Representation of a NAT switch."""
-
-    async def async_turn_on(self) -> None:
-        """Turn on the switch."""
-        self.require_access("write")
-
-        path = self.entity_description.data_switch_path
-        param = ".id"
-        value = None
-        for uid in self.coordinator.data["nat"]:
-            if self.coordinator.data["nat"][uid]["uniq-id"] == (
-                f"{self._data['chain']},{self._data['action']},{self._data['protocol']},"
-                f"{self._data['in-interface']}:{self._data['dst-port']}-"
-                f"{self._data['out-interface']}:{self._data['to-addresses']}:{self._data['to-ports']}"
-            ):
-                value = self.coordinator.data["nat"][uid][".id"]
-
-        mod_param = self.entity_description.data_switch_parameter
-        await self.async_run_routeros(
-            self.coordinator.set_value, path, param, value, mod_param, False
-        )
-        await self.coordinator.async_refresh()
-
-    async def async_turn_off(self) -> None:
-        """Turn off the switch."""
-        self.require_access("write")
-
-        path = self.entity_description.data_switch_path
-        param = ".id"
-        value = None
-        for uid in self.coordinator.data["nat"]:
-            if self.coordinator.data["nat"][uid]["uniq-id"] == (
-                f"{self._data['chain']},{self._data['action']},{self._data['protocol']},"
-                f"{self._data['in-interface']}:{self._data['dst-port']}-"
-                f"{self._data['out-interface']}:{self._data['to-addresses']}:{self._data['to-ports']}"
-            ):
-                value = self.coordinator.data["nat"][uid][".id"]
-
-        mod_param = self.entity_description.data_switch_parameter
-        await self.async_run_routeros(
-            self.coordinator.set_value, path, param, value, mod_param, True
-        )
-        await self.coordinator.async_refresh()
-
-
-# ---------------------------
-#   MikrotikMangleSwitch
-# ---------------------------
-class MikrotikMangleSwitch(MikrotikSwitch):
-    """Representation of a Mangle switch."""
-
-    async def async_turn_on(self) -> None:
-        """Turn on the switch."""
-        self.require_access("write")
-
-        path = self.entity_description.data_switch_path
-        param = ".id"
-        value = None
-        for uid in self.coordinator.data["mangle"]:
-            if self.coordinator.data["mangle"][uid]["uniq-id"] == (
-                f"{self._data['chain']},{self._data['action']},{self._data['protocol']},"
-                f"{self._data['src-address']}:{self._data['src-port']}-"
-                f"{self._data['dst-address']}:{self._data['dst-port']},"
-                f"{self._data['src-address-list']}-{self._data['dst-address-list']}"
-            ):
-                value = self.coordinator.data["mangle"][uid][".id"]
-
-        mod_param = self.entity_description.data_switch_parameter
-        await self.async_run_routeros(
-            self.coordinator.set_value, path, param, value, mod_param, False
-        )
-        await self.coordinator.async_refresh()
-
-    async def async_turn_off(self) -> None:
-        """Turn off the switch."""
-        self.require_access("write")
-
-        path = self.entity_description.data_switch_path
-        param = ".id"
-        value = None
-        for uid in self.coordinator.data["mangle"]:
-            if self.coordinator.data["mangle"][uid]["uniq-id"] == (
-                f"{self._data['chain']},{self._data['action']},{self._data['protocol']},"
-                f"{self._data['src-address']}:{self._data['src-port']}-"
-                f"{self._data['dst-address']}:{self._data['dst-port']},"
-                f"{self._data['src-address-list']}-{self._data['dst-address-list']}"
-            ):
-                value = self.coordinator.data["mangle"][uid][".id"]
-
-        mod_param = self.entity_description.data_switch_parameter
-        await self.async_run_routeros(
-            self.coordinator.set_value, path, param, value, mod_param, True
-        )
-        await self.coordinator.async_refresh()
-
-
-# ---------------------------
-#   MikrotikFilterSwitch
-# ---------------------------
-class MikrotikFilterSwitch(MikrotikSwitch):
-    """Representation of a Filter switch."""
-
-    async def async_turn_on(self) -> None:
-        """Turn on the switch."""
-        self.require_access("write")
-
-        path = self.entity_description.data_switch_path
-        param = ".id"
-        value = None
-        for uid in self.coordinator.data["filter"]:
-            if self.coordinator.data["filter"][uid]["uniq-id"] == (
-                f"{self._data['chain']},{self._data['action']},{self._data['protocol']},{self._data['layer7-protocol']},"
-                f"{self._data['in-interface']},{self._data['in-interface-list']}:{self._data['src-address']},{self._data['src-address-list']}:{self._data['src-port']}-"
-                f"{self._data['out-interface']},{self._data['out-interface-list']}:{self._data['dst-address']},{self._data['dst-address-list']}:{self._data['dst-port']}"
-            ):
-                value = self.coordinator.data["filter"][uid][".id"]
-
-        mod_param = self.entity_description.data_switch_parameter
-        await self.async_run_routeros(
-            self.coordinator.set_value, path, param, value, mod_param, False
-        )
-        await self.coordinator.async_refresh()
-
-    async def async_turn_off(self) -> None:
-        """Turn off the switch."""
-        self.require_access("write")
-
-        path = self.entity_description.data_switch_path
-        param = ".id"
-        value = None
-        for uid in self.coordinator.data["filter"]:
-            if self.coordinator.data["filter"][uid]["uniq-id"] == (
-                f"{self._data['chain']},{self._data['action']},{self._data['protocol']},{self._data['layer7-protocol']},"
-                f"{self._data['in-interface']},{self._data['in-interface-list']}:{self._data['src-address']},{self._data['src-address-list']}:{self._data['src-port']}-"
-                f"{self._data['out-interface']},{self._data['out-interface-list']}:{self._data['dst-address']},{self._data['dst-address-list']}:{self._data['dst-port']}"
-            ):
-                value = self.coordinator.data["filter"][uid][".id"]
-
-        mod_param = self.entity_description.data_switch_parameter
-        await self.async_run_routeros(
-            self.coordinator.set_value, path, param, value, mod_param, True
-        )
-        await self.coordinator.async_refresh()
+# NAT, Mangle and Filter rules are keyed and switched by their RouterOS .id,
+# which the generic switch already does.
+MikrotikNATSwitch = MikrotikSwitch
+MikrotikMangleSwitch = MikrotikSwitch
+MikrotikFilterSwitch = MikrotikSwitch
 
 
 # ---------------------------
@@ -379,7 +226,7 @@ class MikrotikQueueSwitch(MikrotikSwitch):
         await self.async_run_routeros(
             self.coordinator.set_value, path, param, value, mod_param, False
         )
-        await self.coordinator.async_refresh()
+        await self.coordinator.async_request_full_refresh()
 
     async def async_turn_off(self) -> None:
         """Turn off the switch."""
@@ -396,7 +243,7 @@ class MikrotikQueueSwitch(MikrotikSwitch):
         await self.async_run_routeros(
             self.coordinator.set_value, path, param, value, mod_param, True
         )
-        await self.coordinator.async_refresh()
+        await self.coordinator.async_request_full_refresh()
 
 
 # ---------------------------
@@ -416,7 +263,7 @@ class MikrotikKidcontrolPauseSwitch(MikrotikSwitch):
         await self.async_run_routeros(
             self.coordinator.execute, path, command, param, value
         )
-        await self.coordinator.async_refresh()
+        await self.coordinator.async_request_full_refresh()
 
     async def async_turn_off(self) -> None:
         """Turn off the switch."""
@@ -429,4 +276,4 @@ class MikrotikKidcontrolPauseSwitch(MikrotikSwitch):
         await self.async_run_routeros(
             self.coordinator.execute, path, command, param, value
         )
-        await self.coordinator.async_refresh()
+        await self.coordinator.async_request_full_refresh()
