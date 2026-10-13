@@ -165,7 +165,12 @@ def test_every_write_path_has_a_change() -> None:
         ({}, set(ALL_CHANGES)),
         ({CONF_ALLOWED_CHANGES: []}, set()),
         ({CONF_ALLOWED_CHANGES: ["firmware", "bogus"]}, {"firmware"}),
-        ({CONF_ALLOWED_CHANGES: "firmware"}, set(ALL_CHANGES)),
+        # Only an absent option means "everything"; a malformed one fails closed
+        ({CONF_ALLOWED_CHANGES: "firmware"}, set()),
+        ({CONF_ALLOWED_CHANGES: None}, set()),
+        ({CONF_ALLOWED_CHANGES: 1}, set()),
+        ({CONF_ALLOWED_CHANGES: {"ports": True}}, set()),
+        ({CONF_ALLOWED_CHANGES: ["firmware", None, ["x"]]}, {"firmware"}),
     ],
 )
 def test_allowed_changes_option(options, expected) -> None:

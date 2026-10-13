@@ -61,10 +61,13 @@ def format_attribute(attr):
 # ---------------------------
 def allowed_changes(options: Mapping) -> frozenset[str]:
     """Return the kinds of change Home Assistant may make on the router."""
-    value = options.get(CONF_ALLOWED_CHANGES, DEFAULT_ALLOWED_CHANGES)
+    if CONF_ALLOWED_CHANGES not in options:
+        return frozenset(DEFAULT_ALLOWED_CHANGES)
+    value = options[CONF_ALLOWED_CHANGES]
     if not isinstance(value, (list, tuple, set, frozenset)):
-        return frozenset(ALL_CHANGES)
-    return frozenset(value) & frozenset(ALL_CHANGES)
+        # Malformed (None, a string, ...): fail closed, allow nothing
+        return frozenset()
+    return frozenset(item for item in value if item in ALL_CHANGES)
 
 
 # ---------------------------
