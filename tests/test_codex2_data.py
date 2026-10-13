@@ -143,3 +143,44 @@ def test_counter_reset_and_quick_refresh(monkeypatch) -> None:
     clock[0] += 59.8  # 60 s after the last real sample
     _reply(coordinator, [("A", 1200, 1200)])
     assert coordinator.ds["client_traffic"]["A"]["tx"] == 10
+
+
+# M6: link-change times use the router's own time zone
+def test_router_time_zone_from_clock() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from custom_components.mikrotik_router.coordinator import (
+        _parse_routeros_time,
+        _router_time_zone,
+    )
+
+    tz = _router_time_zone({"time-zone-name": "America/New_York", "gmt-offset": "-05:00"})
+    parsed = _parse_routeros_time("2024-01-05 10:00:00", tz)
+    assert parsed.utcoffset() == timedelta(hours=-5)
+    # Not an IANA name: fall back to the offset
+    tz = _router_time_zone({"time-zone-name": "manual", "gmt-offset": "+02:30"})
+    assert tz == timezone(timedelta(hours=2, minutes=30))
+    assert _router_time_zone({"time-zone-name": "manual", "gmt-offset": -3600}) == timezone(
+        timedelta(hours=-1)
+    )
+    assert _router_time_zone({"time-zone-name": "manual"}) is None
+    assert _router_time_zone(None) is None
+    assert _parse_routeros_time("2024-01-05 10:00:00", None) is None
+    assert datetime(2024, 1, 5, 10, tzinfo=timezone.utc)
+
+
+def test_unreadable_clock_keeps_last_zone_and_unreadable_zone_is_unknown() -> None:
+    from datetime import timezone
+
+    coordinator = object.__new__(MikrotikCoordinator)
+    coordinator.api = MagicMock()
+    coordinator._router_tz = None
+    coordinator.api.query.return_value = [{"time-zone-name": "UTC"}]
+    coordinator._get_router_time_zone()
+    assert coordinator._router_tz is not None
+    coordinator.api.query.return_value = None  # read failed
+    coordinator._get_router_time_zone()
+    assert coordinator._router_tz is not None
+    coordinator.api.query.return_value = [{"time-zone-name": "manual"}]
+    coordinator._get_router_time_zone()
+    assert coordinator._router_tz is None

@@ -8,7 +8,8 @@ import logging
 import re
 from time import monotonic
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dataclasses import dataclass
 from ipaddress import ip_address, IPv4Network
 
@@ -17,7 +18,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import entity_registry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.util.dt import get_default_time_zone, utcnow
+from homeassistant.util.dt import utcnow
 
 from .helper import (
     allowed_changes,
@@ -215,20 +216,45 @@ def _duplex(full_duplex) -> str | None:
     return None
 
 
-def _parse_routeros_time(value) -> datetime | None:
+_GMT_OFFSET = re.compile(r"^([+-])(\d{1,2}):?(\d{2})$")
+
+
+def _router_time_zone(clock) -> tzinfo | None:
+    """Return the router's time zone from a /system/clock row, or None.
+
+    Uses the IANA name when it is known here, else the current GMT offset.
+    """
+    if not isinstance(clock, dict):
+        return None
+    name = clock.get("time-zone-name")
+    if isinstance(name, str) and name:
+        try:
+            return ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            pass
+    offset = clock.get("gmt-offset")
+    if isinstance(offset, int) and not isinstance(offset, bool):
+        return timezone(timedelta(seconds=offset))
+    if isinstance(offset, str) and (match := _GMT_OFFSET.match(offset.strip())):
+        delta = timedelta(hours=int(match.group(2)), minutes=int(match.group(3)))
+        return timezone(-delta if match.group(1) == "-" else delta)
+    return None
+
+
+def _parse_routeros_time(value, tz: tzinfo | None) -> datetime | None:
     """Parse a RouterOS local time ("2024-01-05 10:22:33" or "jan/05/2024 ...").
 
-    RouterOS reports the router's local time without a zone; Home
-    Assistant's time zone is assumed.
+    RouterOS reports the router's local time without a zone, so the router's
+    time zone (from /system/clock) is needed; without it the time is unknown.
     """
-    if not isinstance(value, str) or not value:
+    if tz is None or not isinstance(value, str) or not value:
         return None
     for fmt in _ROUTEROS_TIME_FORMATS:
         try:
             parsed = datetime.strptime(value.strip(), fmt)
         except ValueError:
             continue
-        return parsed.replace(tzinfo=get_default_time_zone())
+        return parsed.replace(tzinfo=tz)
     return None
 
 
@@ -502,6 +528,8 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         self.interface_traffic_last_run = None
         self._published = {}
         self._monitor_batch = True
+        # The router's time zone, read from /system/clock in the slow tier
+        self._router_tz = None
         self.rebootcheck = 0
         # Tiered polling: static config is read every SLOW_POLL_INTERVAL,
         # or on the next poll after force_full_refresh is set.
@@ -1112,6 +1140,10 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         ):
             self._get_ethernet_config()
 
+        # Link-change times are in the router's local time
+        if self._slow_poll:
+            self._get_router_time_zone()
+
         # Udpate virtual interfaces
         bonding = False
         sfp_ports = []
@@ -1139,14 +1171,15 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         self._monitor_ethernet(sfp_ports, ETHERNET_MONITOR_SFP_VALS)
         self._monitor_ethernet(copper_ports, ETHERNET_MONITOR_VALS)
 
+        router_tz = getattr(self, "_router_tz", None)
         for vals in self.ds["interface"].values():
             vals["link-speed"] = _link_speed(vals.get("rate"))
             vals["duplex"] = _duplex(vals.get("full-duplex"))
             changes = [
                 parsed
                 for parsed in (
-                    _parse_routeros_time(vals.get("last-link-up-time")),
-                    _parse_routeros_time(vals.get("last-link-down-time")),
+                    _parse_routeros_time(vals.get("last-link-up-time"), router_tz),
+                    _parse_routeros_time(vals.get("last-link-down-time"), router_tz),
                 )
                 if parsed is not None
             ]
@@ -1281,6 +1314,17 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 {"name": "type", "value": "ovpn-in"},
             ],
         )
+
+    # ---------------------------
+    #   _get_router_time_zone
+    # ---------------------------
+    def _get_router_time_zone(self) -> None:
+        """Read the router's time zone (None when it can't be told)."""
+        clock = self.api.query("/system/clock", ignore_trap=True)
+        zone = _router_time_zone(clock[0]) if clock else None
+        if zone is not None or clock is not None:
+            # Keep the last known zone when the read itself failed
+            self._router_tz = zone
 
     # ---------------------------
     #   _monitor_ethernet
