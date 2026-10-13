@@ -163,10 +163,34 @@ def test_temperature_hysteresis_is_finer_than_cpu_load(monkeypatch) -> None:
         [{"name": "cpu-temperature", "value": "46"}] if path == "/system/health" else None
     )
     coordinator.ds["health7"] = {}
-    coordinator.ds["access"] = ["write", "policy", "reboot"]
+    coordinator.ds["access"] = ["write", "policy", "reboot", "read"]
     coordinator.get_system_health()
     assert coordinator.ds["health"]["cpu-temperature"] == "46"
     assert ("health", "gone-temperature") not in coordinator._published
+
+
+def test_system_health_needs_only_read_access():
+    """A read-only account (read, api) still gets health sensors; an account
+    without read access does not query /system/health at all."""
+    coordinator = _coordinator()
+    coordinator.api.connected.return_value = True
+    coordinator.major_fw_version = 7
+    coordinator.ds["health"] = {}
+    coordinator.ds["health7"] = {}
+    coordinator.api.query.side_effect = lambda path, **kw: (
+        [{"name": "temperature", "value": "38"}] if path == "/system/health" else None
+    )
+
+    coordinator.ds["access"] = ["read", "api"]
+    coordinator.get_system_health()
+    assert coordinator.ds["health"]["temperature"] == "38"
+
+    coordinator.ds["health"] = {}
+    coordinator.api.query.reset_mock()
+    coordinator.ds["access"] = ["api"]
+    coordinator.get_system_health()
+    assert coordinator.ds["health"] == {}
+    coordinator.api.query.assert_not_called()
 
 
 def _monitor_coordinator(batch_ok):
