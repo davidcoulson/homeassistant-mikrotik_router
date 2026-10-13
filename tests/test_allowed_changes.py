@@ -484,3 +484,31 @@ async def test_user_step_stores_allowed_changes_as_option(hass: HomeAssistant) -
     assert result["type"] == "create_entry"
     assert CONF_ALLOWED_CHANGES not in result["data"]
     assert result["options"] == {CONF_ALLOWED_CHANGES: []}
+
+
+# ---------------------------------------------------------------------------
+# Review 2 M2: query() never returns a writable librouteros path
+# ---------------------------------------------------------------------------
+def test_query_has_no_raw_path_option() -> None:
+    """query(return_list=False) used to hand out a Path that can write."""
+    api = _api()
+    with pytest.raises(TypeError):
+        api.query("/interface", return_list=False)
+    assert not api._connection.mock_calls
+
+
+def test_query_returns_data_not_a_path() -> None:
+    api = _api()
+    api._connection.path.return_value = [{"name": "ether1"}]
+    result = api.query("/interface")
+    assert result == [{"name": "ether1"}]
+    assert isinstance(result, list)
+    # A list has no update(), so it can't write
+    assert not hasattr(result, "update")
+
+
+def test_query_positional_arguments_cannot_select_a_raw_path() -> None:
+    """The old fourth positional argument was return_list."""
+    api = _api()
+    api._connection.path.return_value = [{"name": "ether1"}]
+    assert api.query("/interface", None, None, False) == [{"name": "ether1"}]

@@ -394,6 +394,22 @@ class MikrotikAPI:
         path,
         command=None,
         args=None,
+        ignore_trap=False,
+    ) -> Optional(list):
+        """Retrieve data from Mikrotik API as a list.
+
+        The raw librouteros path is never handed out: it can write.
+        """
+        return self._query(path, command, args, True, ignore_trap)
+
+    # ---------------------------
+    #   _query
+    # ---------------------------
+    def _query(
+        self,
+        path,
+        command=None,
+        args=None,
         return_list=True,
         ignore_trap=False,
     ) -> Optional(list):
@@ -485,7 +501,7 @@ class MikrotikAPI:
             if not self.connection_check():
                 return False
 
-            response = self.query(path, return_list=False)
+            response = self._query(path, return_list=False)
             if response is None:
                 return False
 
@@ -525,7 +541,7 @@ class MikrotikAPI:
             if not self.connection_check():
                 return False
 
-            response = self.query(path, return_list=False)
+            response = self._query(path, return_list=False)
             if response is None:
                 return False
 
@@ -569,7 +585,7 @@ class MikrotikAPI:
             if not self.connection_check():
                 return False
 
-            response = self.query("/system/script", return_list=False)
+            response = self._query("/system/script", return_list=False)
             if response is None:
                 return False
 
@@ -612,7 +628,7 @@ class MikrotikAPI:
             if not self.connection_check():
                 return None
 
-            response = self.query("/ping", return_list=False)
+            response = self._query("/ping", return_list=False)
             if response is None:
                 return None
 
@@ -676,7 +692,7 @@ class MikrotikAPI:
 
         if use_accounting:
             with self.lock:
-                accounting = self.query("/ip/accounting", return_list=False)
+                accounting = self._query("/ip/accounting", return_list=False)
                 if accounting is None:
                     return 0
 
