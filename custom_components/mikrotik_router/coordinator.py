@@ -2673,8 +2673,21 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 if key not in self.ds["host"][uid]:
                     self.ds["host"][uid][key] = default
 
-        # if not self.host_tracking_initialized:
-        #     await self.async_ping_tracked_hosts()
+        # Without the "test" policy nothing pings wired hosts. A host in the
+        # bridge host table (learned on a port, aged out by the router) is
+        # then the evidence it is present; a host without any evidence
+        # source is unknown instead of permanently away.
+        can_ping = "test" in self.ds["access"]
+        now = utcnow()
+        for uid, vals in self.ds["host"].items():
+            if vals["source"] in ("capsman", "wireless"):
+                vals["presence-tracked"] = True
+                continue
+            bridged = self.ds["bridge_host"].get(uid, {}).get("enabled", False)
+            if not can_ping and bridged:
+                vals["available"] = True
+                vals["last-seen"] = now
+            vals["presence-tracked"] = can_ping or bool(bridged)
 
         # Process hosts
         self.ds["resource"]["clients_wired"] = 0
