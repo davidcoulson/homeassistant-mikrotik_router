@@ -19,7 +19,12 @@ from homeassistant.helpers import entity_registry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util.dt import get_default_time_zone, utcnow
 
-from .helper import allowed_changes, parse_routeros_major_minor, track_hosts_timeout
+from .helper import (
+    allowed_changes,
+    is_sfp_port,
+    parse_routeros_major_minor,
+    track_hosts_timeout,
+)
 
 
 from homeassistant.const import (
@@ -96,7 +101,7 @@ ETHERNET_MONITOR_SFP_VALS = [
     {"name": "full-duplex", "default": "unknown"},
     {"name": "advertising", "default": "unknown"},
     {"name": "link-partner-advertising", "default": "unknown"},
-    {"name": "sfp-temperature", "default": 0},
+    {"name": "sfp-temperature", "default": None},
     {"name": "sfp-supply-voltage", "default": "unknown"},
     {"name": "sfp-module-present", "default": "unknown"},
     {"name": "sfp-tx-bias-current", "default": "unknown"},
@@ -1126,7 +1131,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 ] = f"{vals['port-mac-address']}-{vals['name']}"
 
             if vals["type"] == "ether" and vals.get(".id"):
-                if vals.get("sfp-shutdown-temperature", "") != "":
+                if is_sfp_port(vals):
                     sfp_ports.append(vals[".id"])
                 else:
                     copper_ports.append(vals[".id"])
@@ -1264,7 +1269,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 {"name": "default-name"},
                 {"name": "name", "default_val": "default-name"},
                 {"name": "poe-out", "default": "N/A"},
-                {"name": "sfp-shutdown-temperature", "default": 0},
+                {"name": "sfp-shutdown-temperature", "default": None},
             ],
             skip=[
                 {"name": "type", "value": "bridge"},

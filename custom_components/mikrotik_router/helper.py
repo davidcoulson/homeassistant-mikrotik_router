@@ -47,6 +47,17 @@ def child_device_identifier(
 
 
 # ---------------------------
+#   is_sfp_port
+# ---------------------------
+def is_sfp_port(vals: Mapping) -> bool:
+    """Return True for a port RouterOS reports an SFP shutdown temperature for.
+
+    Copper ports have no such field; it is None for them, never a number.
+    """
+    return vals.get("sfp-shutdown-temperature") not in (None, "")
+
+
+# ---------------------------
 #   format_attribute
 # ---------------------------
 def format_attribute(attr):

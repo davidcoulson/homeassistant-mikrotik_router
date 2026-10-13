@@ -30,7 +30,7 @@ from .const import (
 )
 from .coordinator import MikrotikConfigEntry
 from .entity import MikrotikEntity, async_add_entities
-from .helper import allowed_changes, format_attribute
+from .helper import allowed_changes, format_attribute, is_sfp_port
 
 _LOGGER = getLogger(__name__)
 
@@ -145,7 +145,7 @@ class MikrotikPortBinarySensor(MikrotikBinarySensor):
                 if variable in self._data:
                     attributes[format_attribute(variable)] = self._data[variable]
 
-            if "sfp-shutdown-temperature" in self._data:
+            if is_sfp_port(self._data):
                 for variable in DEVICE_ATTRIBUTES_IFACE_SFP:
                     if variable in self._data:
                         attributes[format_attribute(variable)] = self._data[variable]
