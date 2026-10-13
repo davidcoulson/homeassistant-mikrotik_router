@@ -434,6 +434,12 @@ def _async_migrate_child_devices(
             )
 
 
+# Marks registry entries this integration disabled because of the allowed
+# changes option, so only those are enabled again (integration-disabled
+# entities, which are off by default, stay off).
+DISABLED_BY_ALLOWED_CHANGES = entity_registry.RegistryEntryDisabler.CONFIG_ENTRY
+
+
 # ---------------------------
 #   _async_remove_disallowed_changes
 # ---------------------------
@@ -441,13 +447,16 @@ def _async_migrate_child_devices(
 def _async_remove_disallowed_changes(
     hass: HomeAssistant, config_entry: MikrotikConfigEntry
 ) -> None:
-    """Remove registry entries that don't fit the allowed changes option.
+    """Disable registry entries that don't fit the allowed changes option.
 
-    Switches for a kind of change that isn't allowed go, and buttons go
-    without script changes, so nothing left in the registry can make a
-    change the option forbids. The state binary sensors that stand in for
-    switches go once their kind of change is allowed again. Empty devices
-    are removed afterwards by _async_remove_orphaned_devices.
+    Switches for a kind of change that isn't allowed are disabled, and so are
+    buttons without script changes, so nothing active in the registry can make
+    a change the option forbids. The state binary sensors that stand in for
+    switches are disabled once their kind of change is allowed again. They are
+    disabled, not removed, so entity IDs, names and history survive switching
+    a category off and on; only entries this integration disabled are
+    enabled again. Empty devices are removed afterwards by
+    _async_remove_orphaned_devices.
     """
     allowed = allowed_changes(config_entry.options)
     prefix = f"{config_entry.data[CONF_NAME].lower()}-"
@@ -464,22 +473,39 @@ def _async_remove_disallowed_changes(
     ):
         unique_id = str(entry.unique_id)
         if entry.domain == Platform.BUTTON:
-            remove = CHANGE_SCRIPTS not in allowed
+            # None: not managed; True: must be disabled; False: may be enabled
+            disable = CHANGE_SCRIPTS not in allowed
         elif entry.domain == Platform.SWITCH:
-            remove = any(
-                unique_id.startswith(switch_prefix) and change not in allowed
-                for switch_prefix, change in switch_prefixes.items()
+            disable = next(
+                (
+                    change not in allowed
+                    for switch_prefix, change in switch_prefixes.items()
+                    if unique_id.startswith(switch_prefix)
+                ),
+                None,
             )
         elif entry.domain == Platform.BINARY_SENSOR:
-            remove = any(
-                unique_id.startswith(state_prefix) and change in allowed
-                for state_prefix, change in state_prefixes.items()
+            disable = next(
+                (
+                    change in allowed
+                    for state_prefix, change in state_prefixes.items()
+                    if unique_id.startswith(state_prefix)
+                ),
+                None,
             )
         else:
-            remove = False
-        if remove:
-            _LOGGER.debug("Removing %s (change not allowed)", entry.entity_id)
-            ent_reg.async_remove(entry.entity_id)
+            disable = None
+
+        if disable is None:
+            continue
+        if disable and entry.disabled_by is None:
+            _LOGGER.debug("Disabling %s (change not allowed)", entry.entity_id)
+            ent_reg.async_update_entity(
+                entry.entity_id, disabled_by=DISABLED_BY_ALLOWED_CHANGES
+            )
+        elif not disable and entry.disabled_by == DISABLED_BY_ALLOWED_CHANGES:
+            _LOGGER.debug("Enabling %s (change allowed again)", entry.entity_id)
+            ent_reg.async_update_entity(entry.entity_id, disabled_by=None)
 
 
 # ---------------------------
