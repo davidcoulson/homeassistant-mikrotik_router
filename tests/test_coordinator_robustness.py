@@ -146,6 +146,29 @@ def test_cpu_load_and_temperature_hysteresis(monkeypatch) -> None:
     assert publish("resource", "cpu-load", 13) == 13
 
 
+def test_temperature_hysteresis_is_finer_than_cpu_load(monkeypatch) -> None:
+    """L3: whole-degree temperature moves are published at once, and sensors
+    the router stopped reporting are forgotten."""
+    from custom_components.mikrotik_router import coordinator as module
+
+    monkeypatch.setattr(module, "monotonic", lambda: 1000.0)
+    coordinator = _coordinator()
+    coordinator._published = {}
+    coordinator.ds["health"] = {"cpu-temperature": 45}
+    coordinator._published[("health", "cpu-temperature")] = (45, 45.0, 1000.0)
+    coordinator._published[("health", "gone-temperature")] = (30, 30.0, 1000.0)
+    coordinator.api.connected.return_value = True
+    coordinator.major_fw_version = 7
+    coordinator.api.query.side_effect = lambda path, **kw: (
+        [{"name": "cpu-temperature", "value": "46"}] if path == "/system/health" else None
+    )
+    coordinator.ds["health7"] = {}
+    coordinator.ds["access"] = ["write", "policy", "reboot"]
+    coordinator.get_system_health()
+    assert coordinator.ds["health"]["cpu-temperature"] == "46"
+    assert ("health", "gone-temperature") not in coordinator._published
+
+
 def _monitor_coordinator(batch_ok):
     calls = []
 

@@ -174,7 +174,12 @@ _LINK_RATE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([KMGT]?)bps\s*$", re.IGNORECASE
 _RATE_MULTIPLIER = {"": 1e-6, "K": 1e-3, "M": 1, "G": 1e3, "T": 1e6}
 _ROUTEROS_TIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%b/%d/%Y %H:%M:%S")
 
+# A reading is published when it moves by the delta or the published value is
+# MAX_AGE seconds old, so a threshold automation can lag by up to that.
+# CPU load is a percentage that flickers by a point; temperatures are
+# reported in whole degrees, so any real change (>= 1) is published at once.
 HYSTERESIS_DELTA = 2
+HYSTERESIS_TEMPERATURE_DELTA = 0.5
 HYSTERESIS_MAX_AGE = 300
 
 
@@ -1885,17 +1890,24 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
 
         for key in self.ds["health"]:
             if "temperature" in key:
-                self._apply_hysteresis("health", key)
+                self._apply_hysteresis(
+                    "health", key, delta=HYSTERESIS_TEMPERATURE_DELTA
+                )
+        # Forget sensors the router no longer reports
+        for path, key in [k for k in self._published if k[0] == "health"]:
+            if key not in self.ds["health"]:
+                del self._published[(path, key)]
 
     # ---------------------------
     #   _apply_hysteresis
     # ---------------------------
-    def _apply_hysteresis(self, path, key) -> None:
+    def _apply_hysteresis(self, path, key, delta=HYSTERESIS_DELTA) -> None:
         """Hold a jittery value until it moves enough or gets old.
 
-        CPU load and temperatures flicker by a point every poll, and each
-        change is a recorder row. Publish a new value only when it differs
-        by HYSTERESIS_DELTA or the last one is HYSTERESIS_MAX_AGE old.
+        CPU load flickers by a point every poll, and each change is a
+        recorder row. Publish a new value only when it differs by delta
+        or the last one is HYSTERESIS_MAX_AGE old. An automation on a
+        threshold sees a change at most that late.
         """
         value = self.ds[path].get(key)
         try:
@@ -1909,7 +1921,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         if published is not None:
             old_value, old_number, since = published
             if (
-                abs(number - old_number) < HYSTERESIS_DELTA
+                abs(number - old_number) < delta
                 and now - since < HYSTERESIS_MAX_AGE
             ):
                 self.ds[path][key] = old_value

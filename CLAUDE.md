@@ -15,7 +15,7 @@ A Home Assistant custom integration (HACS) for MikroTik RouterOS. It talks to th
 - `apiparser.py`: `parse_api()` turns API rows into `ds[...]` dicts.
 - `coordinator.py`: `MikrotikCoordinator` (main poll, runs `get_*` in the executor) and `MikrotikTrackerCoordinator` (10 s ping/presence). Shared `self.ds` state.
   - Tiered polling: `self._slow_poll` is true every `SLOW_POLL_INTERVAL` (300 s), after a lost connection, or after `async_request_full_refresh()` (switches call it). Only then are dhcp-client, dhcp-server, `/interface/ethernet` config, wireless config, nat/mangle/filter and the TX/RX byte totals read. The hw-info block (access, capabilities, routerboard, dhcp network, DNS) still runs every 4 h or on reconnect. The firmware check has its own 4 h cadence and never runs during the first refresh.
-  - CPU load and temperatures go through `_apply_hysteresis` (publish on a move of 2, or after 5 min). Throughput is rounded to 3 significant figures (`_round_rate`).
+  - CPU load and temperatures go through `_apply_hysteresis` (CPU load: publish on a move of 2; temperatures: on a move of 0.5, i.e. any whole degree; both after 5 min at the latest, so a threshold automation can lag by that). Throughput is rounded to 3 significant figures (`_round_rate`).
   - Ethernet monitor is one call per group (`numbers=*1,*2,...`), falling back to per-port calls if the router traps.
   - Tracker: pings only with the "test" policy, in one executor job, skipping hosts seen within half the timeout. A failed ping (`None`) keeps the previous state. API commands from entities and the tracker share `coordinator.command_lock`.
   - `async_process_host` holds `_host_lock`; `get_arp`/`get_dhcp`/`get_bridge` parse into a copy and swap it in.
