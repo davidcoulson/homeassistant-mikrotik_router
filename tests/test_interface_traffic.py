@@ -142,6 +142,101 @@ def test_missing_counters_stay_unknown() -> None:
     )
 
 
+def _switch_chip_row(**counters):
+    """A CRS3xx switch port: /interface has no error or drop counters."""
+    row = _row(**counters)
+    for field in ("rx-error", "tx-error", "rx-drop", "tx-drop"):
+        del row[field]
+    return row
+
+
+def _with_ethernet_stats(coordinator, rows, stats):
+    calls = []
+
+    def query(path, command=None, **kw):
+        if path == "/interface":
+            return rows
+        if path == "/interface/ethernet" and command == "print":
+            calls.append(kw)
+            return stats
+        return None
+
+    coordinator.api.query.side_effect = query
+    return calls
+
+
+def test_switch_chip_errors_from_ethernet_stats() -> None:
+    """Error and drop counters missing from /interface come from the
+    ethernet stats, summed over the causes the router reports, once per
+    traffic window."""
+    rows = [_switch_chip_row()]
+    coordinator = _coordinator(rows)
+    stats = [
+        {
+            "name": "ether1",
+            "rx-fcs-error": 2,
+            "rx-align-error": 1,
+            "rx-too-long": 4,
+            "tx-underrun": 0,
+            "rx-drop": 5,
+            "rx-overflow": 1,
+            "tx-drop": 7,
+            "rx-pause": 99,
+        },
+        {"name": "sfp-sfpplus9", "rx-fcs-error": 50},
+    ]
+    calls = _with_ethernet_stats(coordinator, rows, stats)
+
+    vals = _poll(coordinator, 0.0)
+    assert vals["rx-errors"] == 7
+    assert vals["tx-errors"] == 0
+    assert vals["rx-drops"] == 6
+    assert vals["tx-drops"] == 7
+    assert calls == [{"args": {"stats": ""}, "ignore_trap": True}]
+    assert not _skip_sensor(
+        coordinator.config_entry, _description("rx-errors"), coordinator.ds["interface"], "ether1"
+    )
+
+    # Inside the window: no extra call, values held
+    stats[0]["rx-fcs-error"] = 10
+    vals = _poll(coordinator, 30.0)
+    assert len(calls) == 1
+    assert vals["rx-errors"] == 7
+
+    vals = _poll(coordinator, 60.0)
+    assert len(calls) == 2
+    assert vals["rx-errors"] == 15
+
+
+def test_ethernet_stats_not_needed_or_refused() -> None:
+    """Ports that report their own counters cost no extra call; a router
+    that refuses the stats isn't asked again and the sensors stay skipped."""
+    rows = [_row(**{"rx-error": 3})]
+    coordinator = _coordinator(rows)
+    calls = _with_ethernet_stats(coordinator, rows, [{"name": "ether1", "rx-fcs-error": 9}])
+    assert _poll(coordinator, 0.0)["rx-errors"] == 3
+    assert not calls
+
+    rows = [_switch_chip_row()]
+    coordinator = _coordinator(rows)
+    calls = _with_ethernet_stats(coordinator, rows, None)
+    assert _poll(coordinator, 0.0)["rx-errors"] is None
+    _poll(coordinator, 60.0)
+    assert len(calls) == 1
+    assert not coordinator._ethernet_stats_supported
+
+
+def test_ethernet_stats_lost_connection_retries() -> None:
+    """A failed call on a lost connection is retried in a later window."""
+    rows = [_switch_chip_row()]
+    coordinator = _coordinator(rows)
+    _with_ethernet_stats(coordinator, rows, None)
+    coordinator.ds["interface"] = {"ether1": {"name": "ether1", "type": "ether"}}
+    coordinator.api.connected.return_value = False
+    coordinator._fill_ethernet_error_stats()
+    assert coordinator._ethernet_stats_supported
+
+
 def test_no_traffic_without_option() -> None:
     rows = [_row(**{"rx-byte": 1000})]
     coordinator = _coordinator(rows, port_traffic=False)

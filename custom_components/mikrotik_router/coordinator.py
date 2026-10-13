@@ -138,6 +138,32 @@ INTERFACE_COUNTERS = (
     ("tx-queue-drop", "tx-queue-drop-current", "tx-queue-drops"),
 )
 
+# Switch-chip ports (CRS3xx and others) leave the error and drop counters
+# out of /interface. Their /interface/ethernet stats count the same events
+# per cause; each raw counter is the sum of the causes the router reports.
+ETHERNET_ERROR_STATS = {
+    "rx-error-current": (
+        "rx-fcs-error",
+        "rx-align-error",
+        "rx-code-error",
+        "rx-fragment",
+        "rx-jabber",
+        "rx-too-short",
+        "rx-too-long",
+        "rx-length-error",
+        "rx-carrier-error",
+    ),
+    "tx-error-current": (
+        "tx-underrun",
+        "tx-excessive-collision",
+        "tx-late-collision",
+        "tx-fcs-error",
+        "tx-carrier-sense-error",
+    ),
+    "rx-drop-current": ("rx-drop", "rx-overflow"),
+    "tx-drop-current": ("tx-drop",),
+}
+
 _LINK_RATE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([KMGT]?)bps\s*$", re.IGNORECASE)
 _RATE_MULTIPLIER = {"": 1e-6, "K": 1e-3, "M": 1, "G": 1e3, "T": 1e6}
 _ROUTEROS_TIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%b/%d/%Y %H:%M:%S")
@@ -375,6 +401,9 @@ class MikrotikTrackerCoordinator(DataUpdateCoordinator[None]):
 # ---------------------------
 class MikrotikCoordinator(DataUpdateCoordinator[None]):
     """MikrotikCoordinator Class"""
+
+    # Cleared when the router refuses /interface/ethernet "print stats"
+    _ethernet_stats_supported = True
 
     def __init__(self, hass: HomeAssistant, config_entry: MikrotikConfigEntry):
         """Initialize MikrotikCoordinator."""
@@ -1157,6 +1186,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
 
         time_diff = current_run - last_run if last_run is not None else 0
         self.interface_traffic_last_run = current_run
+        self._fill_ethernet_error_stats()
 
         for vals in self.ds["interface"].values():
             for direction in ("rx", "tx"):
@@ -1171,6 +1201,54 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
 
             for _, raw, published in INTERFACE_COUNTERS:
                 vals[published] = vals.get(raw)
+
+    # ---------------------------
+    #   _fill_ethernet_error_stats
+    # ---------------------------
+    def _fill_ethernet_error_stats(self) -> None:
+        """Fill error and drop counters /interface left out of ethernet ports.
+
+        One "print stats" call, only in a traffic window where some ethernet
+        port lacks them. A router that refuses it isn't asked again.
+        """
+        if not self._ethernet_stats_supported:
+            return
+        missing = {
+            vals.get("name"): vals
+            for vals in self.ds["interface"].values()
+            if vals.get("type") == "ether"
+            and any(vals.get(raw) is None for raw in ETHERNET_ERROR_STATS)
+        }
+        if not missing:
+            return
+
+        source = self.api.query(
+            "/interface/ethernet",
+            command="print",
+            args={"stats": ""},
+            ignore_trap=True,
+        )
+        if source is None:
+            if self.api.connected():
+                _LOGGER.debug("Ethernet stats unavailable, not asking again")
+                self._ethernet_stats_supported = False
+            return
+
+        for row in source:
+            vals = missing.get(row.get("name"))
+            if vals is None:
+                continue
+            for raw, fields in ETHERNET_ERROR_STATS.items():
+                if vals.get(raw) is not None:
+                    continue
+                counts = [
+                    row[field]
+                    for field in fields
+                    if isinstance(row.get(field), int)
+                    and not isinstance(row.get(field), bool)
+                ]
+                if counts:
+                    vals[raw] = sum(counts)
 
     # ---------------------------
     #   _get_ethernet_config

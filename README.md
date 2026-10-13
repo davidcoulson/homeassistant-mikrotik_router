@@ -216,7 +216,7 @@ Select sensors you want to use in Home Assistant.
 
 "Port traffic and statistics sensors" adds SNMP-style sensors to each interface device:
 * RX/TX throughput: the byte-counter delta over a window of about 60 s, in bit/s (shown in Mbit/s by default; the `formatted` attribute auto-scales, e.g. "12.3 Mbit/s"). To show a different unit, open the entity's settings and change "Unit of measurement" to bit/s, kbit/s, Mbit/s or Gbit/s.
-* RX/TX total bytes, RX/TX errors and drops, link status, link speed and last link change (enabled by default)
+* RX/TX total bytes, RX/TX errors and drops, link status, link speed and last link change (enabled by default). On switch-chip ports (CRS3xx) errors and drops come from the ethernet stats, summed over the error causes the router reports; ports where RouterOS reports neither get no error or drop sensors
 * RX/TX packets, TX queue drops, link downs and duplex (disabled by default; enable them on the entity)
 
 # Development
