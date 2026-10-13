@@ -2910,10 +2910,13 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
 
         self._sync_client_traffic_hosts(
             {
-                "previous-bytes-up": 0.0,
-                "previous-bytes-down": 0.0,
-                "tx": 0.0,
-                "rx": 0.0,
+                # Per-device baseline: counters and the time they were read.
+                # Unknown until a device has been seen twice.
+                "previous-bytes-up": None,
+                "previous-bytes-down": None,
+                "previous-time": None,
+                "tx": None,
+                "rx": None,
                 "available": False,
                 "local_accounting": False,
             }
@@ -2940,7 +2943,9 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             ],
         )
 
-        time_diff = self.api.take_client_traffic_snapshot(False)
+        # Keeps the shared snapshot clock moving; each device is timed on its own
+        self.api.take_client_traffic_snapshot(False)
+        now = monotonic()
 
         if not kid_control_devices_data:
             if "kid-control-devices" not in self.notified_flags:
@@ -2959,16 +2964,26 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
 
             self.ds["client_traffic"][uid]["available"] = vals["enabled"]
 
-            current_tx = vals["bytes-up"]
-            previous_tx = self.ds["client_traffic"][uid]["previous-bytes-up"]
-            if time_diff:
-                delta_tx = max(0, current_tx - previous_tx)
-                self.ds["client_traffic"][uid]["tx"] = _round_rate(delta_tx / time_diff)
-            self.ds["client_traffic"][uid]["previous-bytes-up"] = current_tx
+            device = self.ds["client_traffic"][uid]
+            elapsed = None
+            if device.get("previous-time") is not None:
+                elapsed = now - device["previous-time"]
+                if elapsed < 1:
+                    # Read twice in a moment (forced refresh): too short to rate
+                    continue
 
-            current_rx = vals["bytes-down"]
-            previous_rx = self.ds["client_traffic"][uid]["previous-bytes-down"]
-            if time_diff:
-                delta_rx = max(0, current_rx - previous_rx)
-                self.ds["client_traffic"][uid]["rx"] = _round_rate(delta_rx / time_diff)
-            self.ds["client_traffic"][uid]["previous-bytes-down"] = current_rx
+            # A rate needs two samples of this device. Bytes since a missed
+            # sample are divided by the time since the device's last sample,
+            # and a new device starts from unknown instead of its lifetime
+            # counter.
+            for rate, counter, previous in (
+                ("tx", "bytes-up", "previous-bytes-up"),
+                ("rx", "bytes-down", "previous-bytes-down"),
+            ):
+                delta = _counter_delta(vals[counter], device.get(previous))
+                if delta is not None and elapsed and elapsed > 0:
+                    device[rate] = _round_rate(delta / elapsed)
+                else:
+                    device[rate] = None
+                device[previous] = vals[counter]
+            device["previous-time"] = now
