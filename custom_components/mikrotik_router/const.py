@@ -39,6 +39,48 @@ DEFAULT_TRACK_HOSTS = False
 CONF_TRACK_HOSTS_TIMEOUT = "track_network_hosts_timeout"
 DEFAULT_TRACK_HOST_TIMEOUT = 180
 MAX_TRACK_HOST_TIMEOUT = 86400
+# Which kinds of change Home Assistant may make on the router. All are
+# allowed by default, so existing entries behave as before; none is
+# read-only.
+CONF_ALLOWED_CHANGES = "allowed_changes"
+CHANGE_PORTS = "ports"
+CHANGE_FIREWALL = "firewall"
+CHANGE_QUEUES = "queues"
+CHANGE_KIDCONTROL = "kidcontrol"
+CHANGE_PPP = "ppp"
+CHANGE_SCRIPTS = "scripts"
+CHANGE_FIRMWARE = "firmware"
+CHANGE_ACCOUNTING = "accounting"
+ALL_CHANGES = (
+    CHANGE_PORTS,
+    CHANGE_FIREWALL,
+    CHANGE_QUEUES,
+    CHANGE_KIDCONTROL,
+    CHANGE_PPP,
+    CHANGE_SCRIPTS,
+    CHANGE_FIRMWARE,
+    CHANGE_ACCOUNTING,
+)
+DEFAULT_ALLOWED_CHANGES = list(ALL_CHANGES)
+
+# The RouterOS path each write goes to, and the change it belongs to. A
+# restricted connection refuses writes to any path not listed here.
+WRITE_PATH_CHANGES = {
+    "/interface": CHANGE_PORTS,
+    "/interface/ethernet": CHANGE_PORTS,
+    "/ip/firewall/nat": CHANGE_FIREWALL,
+    "/ip/firewall/mangle": CHANGE_FIREWALL,
+    "/ip/firewall/filter": CHANGE_FIREWALL,
+    "/queue/simple": CHANGE_QUEUES,
+    "/ip/kid-control": CHANGE_KIDCONTROL,
+    "/ppp/secret": CHANGE_PPP,
+    "/system/script": CHANGE_SCRIPTS,
+    "/system/package/update": CHANGE_FIRMWARE,
+    "/system/routerboard": CHANGE_FIRMWARE,
+    "/system/backup": CHANGE_FIRMWARE,
+    "/system": CHANGE_FIRMWARE,
+    "/ip/accounting": CHANGE_ACCOUNTING,
+}
 
 CONF_SENSOR_PORT_TRACKER = "sensor_port_tracker"
 DEFAULT_SENSOR_PORT_TRACKER = False

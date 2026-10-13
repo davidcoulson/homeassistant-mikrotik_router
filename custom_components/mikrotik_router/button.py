@@ -6,7 +6,9 @@ from homeassistant.components.button import ButtonEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .const import CHANGE_SCRIPTS
 from .entity import MikrotikEntity, async_add_entities
+from .helper import allowed_changes
 from .coordinator import MikrotikConfigEntry
 from .button_types import (
     SENSOR_TYPES,
@@ -23,6 +25,10 @@ async def async_setup_entry(
     add_entities_callback: AddEntitiesCallback,
 ) -> None:
     """Set up entry for component"""
+    # Every button runs a script on the router
+    if CHANGE_SCRIPTS not in allowed_changes(config_entry.options):
+        return
+
     dispatcher = {
         "MikrotikButton": MikrotikButton,
         "MikrotikScriptButton": MikrotikScriptButton,

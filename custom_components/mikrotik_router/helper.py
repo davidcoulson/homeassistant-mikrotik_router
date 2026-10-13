@@ -10,7 +10,10 @@ from datetime import timedelta
 from homeassistant.util import slugify
 
 from .const import (
+    ALL_CHANGES,
+    CONF_ALLOWED_CHANGES,
     CONF_TRACK_HOSTS_TIMEOUT,
+    DEFAULT_ALLOWED_CHANGES,
     DEFAULT_PORT,
     DEFAULT_TRACK_HOST_TIMEOUT,
     DOMAIN,
@@ -51,6 +54,39 @@ def format_attribute(attr):
     res = res.replace(" ", "_")
     res = res.lower()
     return res
+
+
+# ---------------------------
+#   allowed_changes
+# ---------------------------
+def allowed_changes(options: Mapping) -> frozenset[str]:
+    """Return the kinds of change Home Assistant may make on the router."""
+    value = options.get(CONF_ALLOWED_CHANGES, DEFAULT_ALLOWED_CHANGES)
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return frozenset(ALL_CHANGES)
+    return frozenset(value) & frozenset(ALL_CHANGES)
+
+
+# ---------------------------
+#   format_data_rate
+# ---------------------------
+_DATA_RATE_UNITS = ("bit/s", "kbit/s", "Mbit/s", "Gbit/s", "Tbit/s")
+
+
+def format_data_rate(bits_per_second) -> str | None:
+    """Format a bit rate with an auto-scaled unit, such as "12.3 Mbit/s"."""
+    if not isinstance(bits_per_second, (int, float)) or isinstance(
+        bits_per_second, bool
+    ):
+        return None
+    value = float(bits_per_second)
+    unit = 0
+    while abs(value) >= 1000 and unit < len(_DATA_RATE_UNITS) - 1:
+        value /= 1000
+        unit += 1
+    if unit == 0:
+        return f"{value:.0f} {_DATA_RATE_UNITS[0]}"
+    return f"{value:.3g} {_DATA_RATE_UNITS[unit]}"
 
 
 # ---------------------------

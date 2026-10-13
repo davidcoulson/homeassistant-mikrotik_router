@@ -8,10 +8,12 @@ from time import monotonic, time
 from threading import RLock
 from voluptuous import Optional
 from .const import (
+    ALL_CHANGES,
     DEFAULT_LOGIN_METHOD,
     DEFAULT_ENCODING,
+    WRITE_PATH_CHANGES,
 )
-from .exceptions import ApiEntryNotFound
+from .exceptions import ApiEntryNotFound, ApiReadOnly
 
 import librouteros
 from librouteros.exceptions import MultiTrapError, TrapError
@@ -20,6 +22,9 @@ _LOGGER = logging.getLogger(__name__)
 
 # Socket timeout in seconds. Longer than the 10 s check-for-updates command.
 API_TIMEOUT = 15
+
+# Commands query() may always run. They only report state.
+QUERY_COMMANDS = frozenset({"monitor", "print"})
 
 
 # ---------------------------
@@ -39,6 +44,7 @@ class MikrotikAPI:
         login_method=DEFAULT_LOGIN_METHOD,
         encoding=DEFAULT_ENCODING,
         timeout=API_TIMEOUT,
+        allowed_changes=ALL_CHANGES,
     ):
         """Initialize the Mikrotik Client."""
         self._host = host
@@ -50,6 +56,9 @@ class MikrotikAPI:
         self._login_method = login_method
         self._encoding = encoding
         self._timeout = timeout
+        # Safety net for the allowed changes option: writes to a path whose
+        # kind of change isn't allowed are refused
+        self.allowed_changes = frozenset(allowed_changes)
         self._ssl_wrapper = None
         # API operations can call query() or connect() while holding the lock.
         self.lock = RLock()
@@ -362,6 +371,22 @@ class MikrotikAPI:
         return self._connected
 
     # ---------------------------
+    #   _require_change_allowed
+    # ---------------------------
+    def _require_change_allowed(self, path: str, action: str) -> None:
+        """Raise ApiReadOnly when this connection must not write to path.
+
+        With every kind of change allowed, any path may be written. Otherwise
+        only listed paths whose kind of change is allowed may be.
+        """
+        if self.allowed_changes.issuperset(ALL_CHANGES):
+            return
+        if WRITE_PATH_CHANGES.get(path) in self.allowed_changes:
+            return
+        _LOGGER.warning("Refused RouterOS %s on %s: not an allowed change", action, self._host)
+        raise ApiReadOnly(action)
+
+    # ---------------------------
     #   query
     # ---------------------------
     def query(
@@ -379,6 +404,9 @@ class MikrotikAPI:
 
         if args is None:
             args = {}
+
+        if command and command not in QUERY_COMMANDS:
+            self._require_change_allowed(path, f"{path} {command}")
 
         if not self.connection_check():
             return None
@@ -449,6 +477,7 @@ class MikrotikAPI:
     # ---------------------------
     def set_value(self, path, param, value, mod_param, mod_value) -> bool:
         """Modify a parameter"""
+        self._require_change_allowed(path, f"set {path}")
         # A librouteros path is lazy, so its lookup and update must share a lock.
         with self.lock:
             entry_found = None
@@ -487,6 +516,7 @@ class MikrotikAPI:
     # ---------------------------
     def execute(self, path, command, param, value, attributes=None) -> bool:
         """Execute a command"""
+        self._require_change_allowed(path, f"{path} {command}")
         # Keep the optional lookup and command on the same socket transaction.
         with self.lock:
             entry_found = None
@@ -532,6 +562,7 @@ class MikrotikAPI:
     # ---------------------------
     def run_script(self, name) -> bool:
         """Run script"""
+        self._require_change_allowed("/system/script", f"script {name}")
         # Lookup and run share one lock so a reconnect can't swap the socket.
         with self.lock:
             entry_found = None
@@ -637,6 +668,9 @@ class MikrotikAPI:
     # ---------------------------
     def take_client_traffic_snapshot(self, use_accounting) -> float:
         """Tako accounting snapshot and return time diff"""
+        if use_accounting:
+            self._require_change_allowed("/ip/accounting", "/ip/accounting snapshot/take")
+
         if not self.connection_check():
             return 0
 

@@ -17,9 +17,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import entity_registry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.util.dt import utcnow
+from homeassistant.util.dt import get_default_time_zone, utcnow
 
-from .helper import parse_routeros_major_minor, track_hosts_timeout
+from .helper import allowed_changes, parse_routeros_major_minor, track_hosts_timeout
 
 
 from homeassistant.const import (
@@ -43,6 +43,8 @@ from .const import (
     CONF_DEVICE_TRACKER_SCAN_INTERVAL,
     DEFAULT_DEVICE_TRACKER_SCAN_INTERVAL,
     CONF_SENSOR_PORT_TRAFFIC,
+    CHANGE_ACCOUNTING,
+    CHANGE_FIRMWARE,
     DEFAULT_SENSOR_PORT_TRAFFIC,
     CONF_SENSOR_CLIENT_TRAFFIC,
     DEFAULT_SENSOR_CLIENT_TRAFFIC,
@@ -116,6 +118,30 @@ ETHERNET_MONITOR_SFP_VALS = [
 SLOW_POLL_INTERVAL = 300
 FIRMWARE_CHECK_INTERVAL = 4 * 60 * 60
 
+# Interface throughput is the counter delta over a window of about a minute
+# (SNMP-style), whatever the scan interval. A poll up to 10% early still
+# closes the window, so a 30 s scan publishes every second poll.
+TRAFFIC_RATE_INTERVAL = 60
+TRAFFIC_RATE_TOLERANCE = 0.9
+
+# /interface counters published once per traffic window, as
+# (RouterOS field, raw value key, published key)
+INTERFACE_COUNTERS = (
+    ("rx-byte", "rx-current", "rx-total"),
+    ("tx-byte", "tx-current", "tx-total"),
+    ("rx-packet", "rx-packet-current", "rx-packets"),
+    ("tx-packet", "tx-packet-current", "tx-packets"),
+    ("rx-error", "rx-error-current", "rx-errors"),
+    ("tx-error", "tx-error-current", "tx-errors"),
+    ("rx-drop", "rx-drop-current", "rx-drops"),
+    ("tx-drop", "tx-drop-current", "tx-drops"),
+    ("tx-queue-drop", "tx-queue-drop-current", "tx-queue-drops"),
+)
+
+_LINK_RATE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([KMGT]?)bps\s*$", re.IGNORECASE)
+_RATE_MULTIPLIER = {"": 1e-6, "K": 1e-3, "M": 1, "G": 1e3, "T": 1e6}
+_ROUTEROS_TIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%b/%d/%Y %H:%M:%S")
+
 HYSTERESIS_DELTA = 2
 HYSTERESIS_MAX_AGE = 300
 
@@ -129,6 +155,50 @@ def _round_rate(rate: float) -> int:
     rate = round(rate)
     digits = len(str(abs(rate)))
     return rate if digits <= 3 else round(rate, 3 - digits)
+
+
+def _counter_delta(current, previous) -> int | None:
+    """Return how far a counter moved, or None when it can't be known.
+
+    A counter below its previous value was reset (reboot, reset-counters)
+    or wrapped. Then the bytes since the reset are the best estimate, which
+    never shows a spike.
+    """
+    if current is None or previous is None:
+        return None
+    return current if current < previous else current - previous
+
+
+def _link_speed(rate) -> float | None:
+    """Turn an ethernet monitor rate such as "2.5Gbps" into Mbit/s."""
+    if not isinstance(rate, str) or not (match := _LINK_RATE.match(rate)):
+        return None
+    speed = float(match.group(1)) * _RATE_MULTIPLIER[match.group(2).upper()]
+    return int(speed) if speed.is_integer() else speed
+
+
+def _duplex(full_duplex) -> str | None:
+    """Return "full" or "half" from the ethernet monitor full-duplex flag."""
+    if isinstance(full_duplex, bool):
+        return "full" if full_duplex else "half"
+    return None
+
+
+def _parse_routeros_time(value) -> datetime | None:
+    """Parse a RouterOS local time ("2024-01-05 10:22:33" or "jan/05/2024 ...").
+
+    RouterOS reports the router's local time without a zone; Home
+    Assistant's time zone is assumed.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    for fmt in _ROUTEROS_TIME_FORMATS:
+        try:
+            parsed = datetime.strptime(value.strip(), fmt)
+        except ValueError:
+            continue
+        return parsed.replace(tzinfo=get_default_time_zone())
+    return None
 
 
 def _split_pair(value, convert, default=0) -> tuple:
@@ -201,6 +271,7 @@ class MikrotikTrackerCoordinator(DataUpdateCoordinator[None]):
             config_entry.data[CONF_PORT],
             config_entry.data[CONF_SSL],
             config_entry.data[CONF_VERIFY_SSL],
+            allowed_changes=allowed_changes(config_entry.options),
         )
 
     # ---------------------------
@@ -367,6 +438,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             config_entry.data[CONF_PORT],
             config_entry.data[CONF_SSL],
             config_entry.data[CONF_VERIFY_SSL],
+            allowed_changes=allowed_changes(config_entry.options),
         )
 
         self.debug = False
@@ -441,6 +513,14 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         return self.config_entry.options.get(
             CONF_SENSOR_PORT_TRAFFIC, DEFAULT_SENSOR_PORT_TRAFFIC
         )
+
+    # ---------------------------
+    #   option_allowed_changes
+    # ---------------------------
+    @property
+    def option_allowed_changes(self) -> frozenset[str]:
+        """Config entry option: the kinds of change allowed on the router."""
+        return allowed_changes(self.config_entry.options)
 
     # ---------------------------
     #   option_sensor_client_traffic
@@ -822,7 +902,11 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             await self.hass.async_add_executor_job(self.get_ppp)
 
         if self.api.connected() and self.option_sensor_client_traffic:
-            if 0 < self.major_fw_version < 7:
+            # Accounting needs "snapshot/take", a write
+            if (
+                0 < self.major_fw_version < 7
+                and CHANGE_ACCOUNTING in self.option_allowed_changes
+            ):
                 await self.hass.async_add_executor_job(self.process_accounting)
             elif 0 < self.major_fw_version >= 7:
                 await self.hass.async_add_executor_job(self.process_kid_control_devices)
@@ -953,18 +1037,20 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 {"name": "tx-queue-drop"},
                 {"name": "actual-mtu"},
                 {"name": "about", "source": ".about", "default": ""},
-                {"name": "rx-current", "source": "rx-byte", "default": 0.0},
-                {"name": "tx-current", "source": "tx-byte", "default": 0.0},
+                *(
+                    {"name": raw, "source": field, "default": None}
+                    for field, raw, _ in INTERFACE_COUNTERS
+                ),
             ],
             ensure_vals=[
                 {"name": "client-ip-address"},
                 {"name": "client-mac-address"},
-                {"name": "rx-previous", "default": 0.0},
-                {"name": "tx-previous", "default": 0.0},
-                {"name": "rx", "default": 0.0},
-                {"name": "tx", "default": 0.0},
-                {"name": "rx-total", "default": 0.0},
-                {"name": "tx-total", "default": 0.0},
+                {"name": "rx", "default": None},
+                {"name": "tx", "default": None},
+                *(
+                    {"name": published, "default": None}
+                    for _, _, published in INTERFACE_COUNTERS
+                ),
             ],
             skip=[
                 {"name": "type", "value": "bridge"},
@@ -977,45 +1063,12 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             ],
         )
 
-        # Only advance the traffic timer when the counters were read, or the
-        # next poll would divide two intervals of bytes by one of time.
         if (
             self.option_sensor_port_traffic
             and interfaces is not None
             and self.api.connected()
         ):
-            time_diff = 0
-            if self.interface_traffic_last_run is not None:
-                time_diff = (
-                    interface_traffic_current_run - self.interface_traffic_last_run
-                )
-            self.interface_traffic_last_run = interface_traffic_current_run
-
-            for uid, vals in self.ds["interface"].items():
-                current_tx = vals["tx-current"]
-                previous_tx = vals["tx-previous"] or current_tx
-
-                delta_tx = max(0, current_tx - previous_tx)
-                self.ds["interface"][uid]["tx"] = (
-                    _round_rate(delta_tx / time_diff) if time_diff else 0.0
-                )
-                self.ds["interface"][uid]["tx-previous"] = current_tx
-
-                current_rx = vals["rx-current"]
-                previous_rx = vals["rx-previous"] or current_rx
-
-                delta_rx = max(0, current_rx - previous_rx)
-                self.ds["interface"][uid]["rx"] = (
-                    _round_rate(delta_rx / time_diff) if time_diff else 0.0
-                )
-                self.ds["interface"][uid]["rx-previous"] = current_rx
-
-                # The totals are total_increasing; statistics do not need
-                # them every poll, so they move with the slow tier.
-                if self._slow_poll or not vals["tx-total"]:
-                    self.ds["interface"][uid]["tx-total"] = current_tx
-                if self._slow_poll or not vals["rx-total"]:
-                    self.ds["interface"][uid]["rx-total"] = current_rx
+            self._update_interface_traffic(interface_traffic_current_run)
 
         # Ethernet config (PoE, SFP shutdown temperature) rarely changes:
         # read it in the slow tier, or when a new ether port appears.
@@ -1052,6 +1105,19 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         self._monitor_ethernet(sfp_ports, ETHERNET_MONITOR_SFP_VALS)
         self._monitor_ethernet(copper_ports, ETHERNET_MONITOR_VALS)
 
+        for vals in self.ds["interface"].values():
+            vals["link-speed"] = _link_speed(vals.get("rate"))
+            vals["duplex"] = _duplex(vals.get("full-duplex"))
+            changes = [
+                parsed
+                for parsed in (
+                    _parse_routeros_time(vals.get("last-link-up-time")),
+                    _parse_routeros_time(vals.get("last-link-down-time")),
+                )
+                if parsed is not None
+            ]
+            vals["last-link-change"] = max(changes) if changes else None
+
         if bonding:
             self.ds["bonding"] = parse_api(
                 data={},
@@ -1070,6 +1136,41 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 for tmp in vals["slaves"].split(","):
                     self.ds["bonding_slaves"][tmp] = vals
                     self.ds["bonding_slaves"][tmp]["master"] = uid
+
+    # ---------------------------
+    #   _update_interface_traffic
+    # ---------------------------
+    def _update_interface_traffic(self, current_run: float) -> None:
+        """Publish interface throughput and counters once per traffic window.
+
+        Throughput is the byte-counter delta over the window in bit/s, like
+        an SNMP poller, not RouterOS's instantaneous rate. Between windows
+        the published values stay put, so the recorder sees one change a
+        minute at most.
+        """
+        last_run = self.interface_traffic_last_run
+        if (
+            last_run is not None
+            and current_run - last_run < TRAFFIC_RATE_INTERVAL * TRAFFIC_RATE_TOLERANCE
+        ):
+            return
+
+        time_diff = current_run - last_run if last_run is not None else 0
+        self.interface_traffic_last_run = current_run
+
+        for vals in self.ds["interface"].values():
+            for direction in ("rx", "tx"):
+                current = vals.get(f"{direction}-current")
+                delta = _counter_delta(current, vals.get(f"{direction}-previous"))
+                vals[direction] = (
+                    _round_rate(delta * 8 / time_diff)
+                    if delta is not None and time_diff
+                    else None
+                )
+                vals[f"{direction}-previous"] = current
+
+            for _, raw, published in INTERFACE_COUNTERS:
+                vals[published] = vals.get(raw)
 
     # ---------------------------
     #   _get_ethernet_config
@@ -1815,9 +1916,16 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         ):
             return
 
-        self.execute(
-            "/system/package/update", "check-for-updates", None, None, {"duration": 10}
-        )
+        # check-for-updates is a command; without firmware changes only read
+        # the status of the router's own last check.
+        if CHANGE_FIRMWARE in self.option_allowed_changes:
+            self.execute(
+                "/system/package/update",
+                "check-for-updates",
+                None,
+                None,
+                {"duration": 10},
+            )
         self.ds["fw-update"] = parse_api(
             data={},
             source=self.api.query("/system/package/update"),

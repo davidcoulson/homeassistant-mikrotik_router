@@ -14,10 +14,11 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from .const import DOMAIN
 from .coordinator import MikrotikConfigEntry
 from .entity import MikrotikEntity, async_add_entities
-from .helper import format_attribute
+from .helper import allowed_changes, format_attribute
 from .switch_types import (
     SENSOR_TYPES,
     SENSOR_SERVICES,
+    switch_change,
     DEVICE_ATTRIBUTES_IFACE_ETHER,
     DEVICE_ATTRIBUTES_IFACE_SFP,
     DEVICE_ATTRIBUTES_IFACE_WIRELESS,
@@ -33,6 +34,16 @@ async def async_setup_entry(
     add_entities_callback: AddEntitiesCallback,
 ) -> None:
     """Set up entry for component"""
+    # Only switches for the kinds of change the entry allows
+    allowed = allowed_changes(config_entry.options)
+    descriptions = tuple(
+        description
+        for description in SENSOR_TYPES
+        if switch_change(description) in allowed
+    )
+    if not descriptions:
+        return
+
     dispatcher = {
         "MikrotikSwitch": MikrotikSwitch,
         "MikrotikPortSwitch": MikrotikPortSwitch,
@@ -47,7 +58,7 @@ async def async_setup_entry(
         config_entry,
         add_entities_callback,
         dispatcher,
-        SENSOR_TYPES,
+        descriptions,
         SENSOR_SERVICES,
     )
 

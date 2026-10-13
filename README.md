@@ -201,6 +201,7 @@ NOTES:
 First options page:
 
 ![Integration options](https://raw.githubusercontent.com/tomaae/homeassistant-mikrotik_router/master/docs/assets/images/ui/integration_options.png)
+* "Allowed router changes" - The kinds of change Home Assistant may make on the router: ports (enable, disable, PoE), firewall rules (NAT, mangle, filter), simple queues, kid control, PPP secrets, running scripts, firmware updates (install, backup, reboot) and IP accounting snapshots (RouterOS 6). All are allowed by default. Untick one to remove its switches or buttons; the state of removed switches shows as binary sensors instead, and the RouterOS API connection refuses those writes. For example, untick Ports to install updates from Home Assistant without being able to turn ports off. Untick everything for read-only monitoring
 * "Scan interval" - Scan/refresh time in seconds. Interval changes are applied when options are saved
 * "Device tracker scan interval" - Time in seconds between active reachability checks for tracked network devices
 * "Unit of measurement" - Traffic sensor measurement (bps, Kbps, Mbps, B/s, KB/s, MB/s)
@@ -212,6 +213,11 @@ Second options page:
 ![Integration sensors](https://raw.githubusercontent.com/tomaae/homeassistant-mikrotik_router/master/docs/assets/images/ui/integration_options_sensors.png)
 
 Select sensors you want to use in Home Assistant.
+
+"Port traffic and statistics sensors" adds SNMP-style sensors to each interface device:
+* RX/TX throughput: the byte-counter delta over a window of about 60 s, in bit/s (shown in Mbit/s by default; the `formatted` attribute auto-scales, e.g. "12.3 Mbit/s"). To show a different unit, open the entity's settings and change "Unit of measurement" to bit/s, kbit/s, Mbit/s or Gbit/s.
+* RX/TX total bytes, RX/TX errors and drops, link status, link speed and last link change (enabled by default)
+* RX/TX packets, TX queue drops, link downs and duplex (disabled by default; enable them on the entity)
 
 # Development
 

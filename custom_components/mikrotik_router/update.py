@@ -17,8 +17,9 @@ from homeassistant.components.update import (
 )
 
 from .coordinator import MikrotikConfigEntry, MikrotikCoordinator
+from .const import CHANGE_FIRMWARE
 from .entity import MikrotikEntity, async_add_entities
-from .helper import routeros_release_name
+from .helper import allowed_changes, routeros_release_name
 from .update_types import (
     SENSOR_TYPES,
     SENSOR_SERVICES,
@@ -67,9 +68,11 @@ class MikrotikRouterOSUpdate(MikrotikEntity, UpdateEntity):
         """Set up device update entity."""
         super().__init__(coordinator, entity_description, uid)
 
-        self._attr_supported_features = UpdateEntityFeature.INSTALL
-        self._attr_supported_features |= UpdateEntityFeature.BACKUP
-        self._attr_supported_features |= UpdateEntityFeature.RELEASE_NOTES
+        # Without firmware changes the update shows but can't be installed
+        self._attr_supported_features = UpdateEntityFeature.RELEASE_NOTES
+        if CHANGE_FIRMWARE in allowed_changes(coordinator.config_entry.options):
+            self._attr_supported_features |= UpdateEntityFeature.INSTALL
+            self._attr_supported_features |= UpdateEntityFeature.BACKUP
         self._attr_title = self.entity_description.title
 
     @property
@@ -156,7 +159,11 @@ class MikrotikRouterBoardFWUpdate(MikrotikEntity, UpdateEntity):
         """Set up device update entity."""
         super().__init__(coordinator, entity_description, uid)
 
-        self._attr_supported_features = UpdateEntityFeature.INSTALL
+        self._attr_supported_features = (
+            UpdateEntityFeature.INSTALL
+            if CHANGE_FIRMWARE in allowed_changes(coordinator.config_entry.options)
+            else UpdateEntityFeature(0)
+        )
         self._attr_title = self.entity_description.title
 
     @property

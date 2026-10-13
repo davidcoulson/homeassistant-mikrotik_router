@@ -12,6 +12,7 @@ from homeassistant.components.binary_sensor import (
 )
 
 from .const import DOMAIN
+from .switch_types import SENSOR_TYPES as SWITCH_TYPES, switch_change
 
 DEVICE_ATTRIBUTES_PPP_SECRET = [
     "connected",
@@ -207,5 +208,34 @@ SENSOR_TYPES: tuple[BinarySensorEntityDescription, ...] = (
         func="MikrotikBinarySensor",
     ),
 )
+
+# A switch whose kind of change isn't allowed is replaced by one of these,
+# which shows the same state (port, rule, queue, ... enabled) without a way
+# to change it. The "_state" key suffix keeps their unique ids apart from
+# the existing binary sensors.
+SWITCH_STATE_TYPES: tuple[MikrotikBinarySensorEntityDescription, ...] = tuple(
+    MikrotikBinarySensorEntityDescription(
+        key=f"{switch.key}_state",
+        name=switch.name,
+        icon_enabled=switch.icon_enabled,
+        icon_disabled=switch.icon_disabled,
+        entity_category=switch.entity_category,
+        ha_group=switch.ha_group,
+        ha_connection=switch.ha_connection,
+        ha_connection_value=switch.ha_connection_value,
+        data_path=switch.data_path,
+        data_attribute=switch.data_attribute,
+        data_name=switch.data_name,
+        data_name_comment=switch.data_name_comment,
+        data_uid=switch.data_uid,
+        data_reference=switch.data_reference,
+        data_attributes_list=switch.data_attributes_list,
+    )
+    for switch in SWITCH_TYPES
+)
+# The kind of change each switch state sensor stands in for
+SWITCH_STATE_CHANGES = {
+    f"{switch.key}_state": switch_change(switch) for switch in SWITCH_TYPES
+}
 
 SENSOR_SERVICES = {}

@@ -11,7 +11,11 @@
                     "username": "Username",
                     "password": "Password",
                     "ssl": "Use SSL",
-                    "verify_ssl": "Verify SSL"
+                    "verify_ssl": "Verify SSL",
+                    "allowed_changes": "Allowed router changes"
+                },
+                "data_description": {
+                    "allowed_changes": "Untick a kind of change to remove its switches or buttons and refuse it at the RouterOS API. Untick everything for read-only monitoring."
                 }
             },
             "reauth_confirm": {
@@ -73,6 +77,9 @@
         },
         "routeros_command_failed": {
             "message": "The router did not complete the requested action. Check the connection and RouterOS permissions."
+        },
+        "change_not_allowed": {
+            "message": "Home Assistant isn't allowed to make this change ({action}) on the router. Tick it in the Allowed router changes option to allow it."
         }
     },
     "options": {
@@ -83,17 +90,21 @@
                     "device_tracker_scan_interval": "Device tracker scan interval",
                     "track_iface_clients": "Show client MAC and IP on interfaces",
                     "unit_of_measurement": "Unit of measurement",
-                    "track_network_hosts_timeout": "Track network devices timeout (seconds)"
+                    "track_network_hosts_timeout": "Track network devices timeout (seconds)",
+                    "allowed_changes": "Allowed router changes"
                 },
                 "title": "Mikrotik Router options (1/2)",
-                "description": "Configure integration"
+                "description": "Configure integration",
+                "data_description": {
+                    "allowed_changes": "Switches for a kind of change that isn't allowed are removed and shown as binary sensors instead; buttons need scripts, and installing updates needs firmware updates. Writes that aren't allowed are refused at the RouterOS API. Untick everything for read-only."
+                }
             },
             "sensor_select": {
                 "data": {
                     "track_network_hosts": "Track network devices",
                     "sensor_port_tracker": "Port tracker sensors",
                     "sensor_netwatch_tracker": "Netwatch tracker sensors",
-                    "sensor_port_traffic": "Port traffic sensors",
+                    "sensor_port_traffic": "Port traffic and statistics sensors",
                     "sensor_client_traffic": "Client traffic sensors",
                     "sensor_client_captive": "Captive portal data",
                     "sensor_simple_queues": "Simple queues switches",
@@ -107,6 +118,20 @@
                 },
                 "title": "Mikrotik Router options (2/2)",
                 "description": "Enable sensors and switches"
+            }
+        }
+    },
+    "selector": {
+        "allowed_changes": {
+            "options": {
+                "ports": "Ports (enable, disable, PoE)",
+                "firewall": "Firewall rules (NAT, mangle, filter)",
+                "queues": "Simple queues",
+                "kidcontrol": "Kid control",
+                "ppp": "PPP secrets",
+                "scripts": "Run scripts",
+                "firmware": "Firmware updates (install, backup, reboot)",
+                "accounting": "IP accounting snapshots (RouterOS 6)"
             }
         }
     }

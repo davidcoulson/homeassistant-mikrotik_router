@@ -36,8 +36,9 @@ from .coordinator import (
     MikrotikCoordinator,
     MikrotikTrackerCoordinator,
 )
-from .exceptions import ApiEntryNotFound
+from .exceptions import ApiEntryNotFound, ApiReadOnly
 from .helper import child_device_identifier, format_attribute
+from .sensor_types import ETHERNET_ONLY_SENSORS
 
 _LOGGER = getLogger(__name__)
 
@@ -60,19 +61,22 @@ def _skip_sensor(config_entry, entity_description, data, uid) -> bool:
         )
 
     # Sensors
-    if (
-        entity_description.func == "MikrotikInterfaceTrafficSensor"
-        and not config_entry.options.get(
-            CONF_SENSOR_PORT_TRAFFIC, DEFAULT_SENSOR_PORT_TRAFFIC
-        )
+    port_traffic = config_entry.options.get(
+        CONF_SENSOR_PORT_TRAFFIC, DEFAULT_SENSOR_PORT_TRAFFIC
+    )
+    if entity_description.func in (
+        "MikrotikInterfaceTrafficSensor",
+        "MikrotikInterfaceStatSensor",
     ):
-        return True
+        if not port_traffic or data[uid]["type"] == "bridge":
+            return True
 
-    if (
-        entity_description.func == "MikrotikInterfaceTrafficSensor"
-        and data[uid]["type"] == "bridge"
-    ):
-        return True
+    if entity_description.func == "MikrotikInterfaceStatSensor":
+        # Link speed and duplex come from the ethernet monitor; counters
+        # and link times exist only where RouterOS reports them
+        if entity_description.key in ETHERNET_ONLY_SENSORS:
+            return data[uid]["type"] != "ether"
+        return data[uid].get(entity_description.data_attribute) is None
 
     if (
         entity_description.data_path == "client_traffic"
@@ -87,11 +91,13 @@ def _skip_sensor(config_entry, entity_description, data, uid) -> bool:
     ):
         return True
 
+    # Link status is part of the port traffic sensors too
     if (
         entity_description.func == "MikrotikPortBinarySensor"
         and not config_entry.options.get(
             CONF_SENSOR_PORT_TRACKER, DEFAULT_SENSOR_PORT_TRACKER
         )
+        and not port_traffic
     ):
         return True
 
@@ -220,9 +226,16 @@ class MikrotikEntity(CoordinatorEntity[_MikrotikCoordinatorT], Entity):
         waits here instead of filling the shared executor with jobs that only
         block on the API lock (M10).
         """
+        # The API refuses writes the allowed changes option doesn't permit
         try:
             async with self.coordinator.command_lock:
                 result = await self.hass.async_add_executor_job(target, *args)
+        except ApiReadOnly as error:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="change_not_allowed",
+                translation_placeholders={"action": str(error)},
+            ) from error
         except ApiEntryNotFound as error:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
