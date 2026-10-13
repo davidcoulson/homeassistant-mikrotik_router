@@ -1493,12 +1493,22 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         # /system/health only needs the read policy, so read-only API
         # accounts still get temperature and voltage sensors.
         if "read" not in self.ds["access"]:
+            # Access was revoked: drop cached readings instead of showing
+            # them as current.
+            self.ds["health"] = {}
+            self.ds["health7"] = {}
             return
 
         if 0 < self.major_fw_version < 7:
+            health = self.api.query("/system/health")
+            if not health:
+                # No health endpoint (or a failed query): keep the sensors
+                # unavailable instead of publishing the 0 defaults.
+                return
+
             self.ds["health"] = parse_api(
                 data=self.ds["health"],
-                source=self.api.query("/system/health"),
+                source=health,
                 vals=[
                     {"name": "temperature", "default": 0},
                     {"name": "voltage", "default": 0},
