@@ -1853,11 +1853,9 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
     # ---------------------------
     def get_system_health(self) -> None:
         """Get routerboard data from Mikrotik"""
-        if (
-            "write" not in self.ds["access"]
-            or "policy" not in self.ds["access"]
-            or "reboot" not in self.ds["access"]
-        ):
+        # /system/health only needs the read policy, so read-only API
+        # accounts still get temperature and voltage sensors.
+        if "read" not in self.ds["access"]:
             return
 
         if 0 < self.major_fw_version < 7:
