@@ -2571,6 +2571,11 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
     def process_kid_control_devices(self) -> None:
         """Get Kid Control Device data from Mikrotik"""
 
+        # Rates here use per-device baselines. Forget the shared accounting
+        # snapshot time, so a later switch back to accounting (RouterOS 6)
+        # starts from a fresh baseline instead of one spanning this period.
+        self.api.client_traffic_last_run = None
+
         # Build missing hosts from main hosts dict
         for uid, vals in self.ds["host"].items():
             if uid not in self.ds["client_traffic"]:

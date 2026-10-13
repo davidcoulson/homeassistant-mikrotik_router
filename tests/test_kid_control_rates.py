@@ -38,6 +38,7 @@ def poll():
             coordinator.process_kid_control_devices()
         return coordinator.ds["client_traffic"]
 
+    run.api = coordinator.api
     return run
 
 
@@ -68,7 +69,8 @@ def test_missed_sample_keeps_the_rate_correct(poll) -> None:
 
 def test_new_device_does_not_publish_its_lifetime_counter(poll) -> None:
     poll(0, [_device(MAC1, 0, 0)])
-    poll(60, [_device(MAC1, 600, 0), _device(MAC2, 9_000_000, 0)])
+    traffic = poll(60, [_device(MAC1, 600, 0), _device(MAC2, 9_000_000, 0)])
+    assert traffic[MAC2]["tx"] is None  # first sample: unknown, no spike
     traffic = poll(120, [_device(MAC1, 1200, 0), _device(MAC2, 9_000_600, 0)])
 
     assert traffic[MAC1]["tx"] == 10
@@ -87,3 +89,15 @@ def test_quick_second_read_is_ignored(poll, caplog) -> None:
     poll(60, [_device(MAC1, 600, 0)])
     traffic = poll(60.2, [_device(MAC1, 650, 0)])
     assert traffic[MAC1]["tx"] == 10
+
+    # The quick read must not move the baseline: the next normal sample is
+    # still measured from t=60 / 600 B (600 B over 60 s = 10 B/s).
+    traffic = poll(120, [_device(MAC1, 1200, 0)])
+    assert traffic[MAC1]["tx"] == 10
+
+
+def test_kid_control_resets_the_shared_accounting_baseline(poll) -> None:
+    """After RouterOS 7 polls, a switch back to accounting starts fresh."""
+    poll.api.client_traffic_last_run = 123.0
+    poll(10, [_device(MAC1, 0, 0)])
+    assert poll.api.client_traffic_last_run is None
