@@ -34,6 +34,9 @@ from homeassistant.util import slugify
 from .const import (
     PLATFORMS,
     DOMAIN,
+    ALL_CHANGES,
+    CONF_ALLOWED_CHANGES,
+    LEGACY_READ_ONLY,
     LEGACY_VERIFY_SSL,
     CHANGE_SCRIPTS,
 )
@@ -262,6 +265,9 @@ def _async_router_identifier(
     """
     serial_number = f"{coordinator.data['routerboard']['serial-number']}"
     if serial_number.strip().casefold() not in INVALID_ROUTER_IDENTIFIERS:
+        _async_rekey_placeholder_router_device(
+            hass, config_entry, (DOMAIN, serial_number)
+        )
         return (DOMAIN, serial_number)
 
     fallback = (DOMAIN, config_entry.entry_id)
@@ -299,6 +305,51 @@ def _async_router_identifier(
         break
 
     return fallback
+
+
+# ---------------------------
+#   _async_rekey_placeholder_router_device
+# ---------------------------
+def _async_rekey_placeholder_router_device(
+    hass: HomeAssistant,
+    config_entry: MikrotikConfigEntry,
+    identifier: tuple[str, str],
+) -> None:
+    """Re-key a placeholder router device to a serial that is now readable.
+
+    A board whose first poll had no valid serial registered its router device
+    under the config entry ID (or "N/A"/"unknown"). Create the real device
+    in place instead of beside it, so the child devices keep their parent.
+    """
+    registry = device_registry.async_get(hass)
+    if registry.async_get_device_by_identifier(identifier, config_entry.entry_id):
+        return
+
+    placeholders = {config_entry.entry_id} | set(INVALID_ROUTER_IDENTIFIERS)
+    for device in device_registry.async_entries_for_config_entry(
+        registry, config_entry.entry_id
+    ):
+        router_ids = {
+            value
+            for domain, value in device.identifiers
+            if domain == DOMAIN and not value.startswith(f"{config_entry.entry_id}-")
+        }
+        if not router_ids or not all(
+            value == config_entry.entry_id or value.strip().casefold() in placeholders
+            for value in router_ids
+        ):
+            continue
+
+        registry.async_update_device(
+            device.id,
+            new_identifiers={
+                (domain, value)
+                for domain, value in device.identifiers
+                if not (domain == DOMAIN and value in router_ids)
+            }
+            | {identifier},
+        )
+        return
 
 
 # ---------------------------
@@ -383,6 +434,12 @@ def _async_migrate_child_devices(
             )
 
 
+# Marks registry entries this integration disabled because of the allowed
+# changes option, so only those are enabled again (integration-disabled
+# entities, which are off by default, stay off).
+DISABLED_BY_ALLOWED_CHANGES = entity_registry.RegistryEntryDisabler.CONFIG_ENTRY
+
+
 # ---------------------------
 #   _async_remove_disallowed_changes
 # ---------------------------
@@ -390,13 +447,16 @@ def _async_migrate_child_devices(
 def _async_remove_disallowed_changes(
     hass: HomeAssistant, config_entry: MikrotikConfigEntry
 ) -> None:
-    """Remove registry entries that don't fit the allowed changes option.
+    """Disable registry entries that don't fit the allowed changes option.
 
-    Switches for a kind of change that isn't allowed go, and buttons go
-    without script changes, so nothing left in the registry can make a
-    change the option forbids. The state binary sensors that stand in for
-    switches go once their kind of change is allowed again. Empty devices
-    are removed afterwards by _async_remove_orphaned_devices.
+    Switches for a kind of change that isn't allowed are disabled, and so are
+    buttons without script changes, so nothing active in the registry can make
+    a change the option forbids. The state binary sensors that stand in for
+    switches are disabled once their kind of change is allowed again. They are
+    disabled, not removed, so entity IDs, names and history survive switching
+    a category off and on; only entries this integration disabled are
+    enabled again. Empty devices are removed afterwards by
+    _async_remove_orphaned_devices.
     """
     allowed = allowed_changes(config_entry.options)
     prefix = f"{config_entry.data[CONF_NAME].lower()}-"
@@ -413,22 +473,39 @@ def _async_remove_disallowed_changes(
     ):
         unique_id = str(entry.unique_id)
         if entry.domain == Platform.BUTTON:
-            remove = CHANGE_SCRIPTS not in allowed
+            # None: not managed; True: must be disabled; False: may be enabled
+            disable = CHANGE_SCRIPTS not in allowed
         elif entry.domain == Platform.SWITCH:
-            remove = any(
-                unique_id.startswith(switch_prefix) and change not in allowed
-                for switch_prefix, change in switch_prefixes.items()
+            disable = next(
+                (
+                    change not in allowed
+                    for switch_prefix, change in switch_prefixes.items()
+                    if unique_id.startswith(switch_prefix)
+                ),
+                None,
             )
         elif entry.domain == Platform.BINARY_SENSOR:
-            remove = any(
-                unique_id.startswith(state_prefix) and change in allowed
-                for state_prefix, change in state_prefixes.items()
+            disable = next(
+                (
+                    change in allowed
+                    for state_prefix, change in state_prefixes.items()
+                    if unique_id.startswith(state_prefix)
+                ),
+                None,
             )
         else:
-            remove = False
-        if remove:
-            _LOGGER.debug("Removing %s (change not allowed)", entry.entity_id)
-            ent_reg.async_remove(entry.entity_id)
+            disable = None
+
+        if disable is None:
+            continue
+        if disable and entry.disabled_by is None:
+            _LOGGER.debug("Disabling %s (change not allowed)", entry.entity_id)
+            ent_reg.async_update_entity(
+                entry.entity_id, disabled_by=DISABLED_BY_ALLOWED_CHANGES
+            )
+        elif not disable and entry.disabled_by == DISABLED_BY_ALLOWED_CHANGES:
+            _LOGGER.debug("Enabling %s (change allowed again)", entry.entity_id)
+            ent_reg.async_update_entity(entry.entity_id, disabled_by=None)
 
 
 # ---------------------------
@@ -458,10 +535,27 @@ def _async_remove_orphaned_devices(
             dev_reg, config_entry.entry_id
         ),
     )
-    for device in devices:
-        if device.id != router_device_id and device.id not in used_device_ids:
-            _LOGGER.debug("Removing orphaned device %s (%s)", device.name, device.id)
-            dev_reg.async_remove_device(device.id)
+    removable = {
+        device.id: device
+        for device in devices
+        if device.id != router_device_id and device.id not in used_device_ids
+    }
+    # A device that is the parent of a device we keep must stay too
+    changed = True
+    while changed:
+        changed = False
+        for device in devices:
+            if device.id in removable:
+                continue
+            parent_id = getattr(device, "parent_device_id", None) or getattr(
+                device, "via_device_id", None
+            )
+            if parent_id in removable:
+                del removable[parent_id]
+                changed = True
+    for device in removable.values():
+        _LOGGER.debug("Removing orphaned device %s (%s)", device.name, device.id)
+        dev_reg.async_remove_device(device.id)
 
 
 # ---------------------------
@@ -668,6 +762,17 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: MikrotikConfigE
     if new_version == 3 and new_minor_version < 3:
         _async_migrate_temperature_sensor_units(hass, config_entry)
         new_minor_version = 3
+
+    if new_version == 3 and new_minor_version < 4:
+        # The removed "read_only" option must keep meaning "no changes".
+        legacy_read_only = new_options.pop(LEGACY_READ_ONLY, None)
+        legacy_read_only = new_data.pop(LEGACY_READ_ONLY, legacy_read_only)
+        if CONF_ALLOWED_CHANGES not in new_options and legacy_read_only is not None:
+            # Anything but an explicit false is treated as read-only
+            new_options[CONF_ALLOWED_CHANGES] = (
+                list(ALL_CHANGES) if legacy_read_only is False else []
+            )
+        new_minor_version = 4
 
     if (
         new_data != config_entry.data

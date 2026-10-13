@@ -1,7 +1,7 @@
 """Host tracker coordinator tests."""
 
 from datetime import timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.core import HomeAssistant
 from homeassistant.util.dt import utcnow
@@ -90,3 +90,98 @@ async def test_tracker_without_test_policy_returns_hosts(hass: HomeAssistant) ->
     assert data == {"host": hosts, "routerboard": {"serial-number": "X"}}
     tracker.api.arp_ping.assert_not_called()
     tracker.coordinator.async_process_host.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Review 2 M8 / M9
+# ---------------------------------------------------------------------------
+async def test_tracker_fails_while_the_router_poll_fails(hass: HomeAssistant) -> None:
+    """M8: cached wireless rows must not be stamped as just seen forever."""
+    import pytest
+    from homeassistant.helpers.update_coordinator import UpdateFailed
+
+    hosts = {"m4": _host("wireless", available=True)}
+    tracker = _tracker(hass, hosts)
+    tracker.coordinator.last_update_success = False
+
+    with pytest.raises(UpdateFailed):
+        await tracker._async_update_data()
+    tracker.coordinator.async_process_host.assert_not_awaited()
+    tracker.api.arp_ping.assert_not_called()
+
+    tracker.coordinator.last_update_success = True
+    await tracker._async_update_data()
+    tracker.coordinator.async_process_host.assert_awaited_once()
+
+
+def _host_coordinator(access, bridge_hosts):
+    from custom_components.mikrotik_router.coordinator import MikrotikCoordinator
+
+    coordinator = object.__new__(MikrotikCoordinator)
+    coordinator.support_capsman = False
+    coordinator.support_wireless = False
+    coordinator.host_hass_recovered = True
+    coordinator.config_entry = MagicMock(options={})
+    coordinator.async_mac_lookup = MagicMock(lookup=AsyncMock(return_value="Acme"))
+    coordinator.ds = {
+        "access": list(access),
+        "capsman_hosts": {},
+        "wireless_hosts": {},
+        "dhcp": {
+            mac: {
+                "enabled": True,
+                "address": f"192.0.2.{i}",
+                "mac-address": mac,
+                "interface": "bridge",
+                "comment": "",
+                "host-name": "unknown",
+            }
+            for i, mac in ((10, "m1"), (11, "m2"))
+        },
+        "arp": {},
+        "host": {},
+        "host_hass": {},
+        "hostspot_host": {},
+        "dns": {},
+        "resource": {},
+        "bridge_host": bridge_hosts,
+    }
+    return coordinator
+
+
+async def test_wired_hosts_without_test_policy_use_the_bridge_table() -> None:
+    """M9: a read-only account has no ping; bridge hosts are the evidence."""
+    coordinator = _host_coordinator(("read",), {"m1": {"enabled": True}})
+    await coordinator._async_process_host()
+
+    hosts = coordinator.ds["host"]
+    assert hosts["m1"]["available"] is True
+    assert hosts["m1"]["last-seen"] is not False
+    assert hosts["m1"]["presence-tracked"] is True
+    # Leased but never seen on a port: unknown rather than permanently away
+    assert hosts["m2"]["last-seen"] is False
+    assert hosts["m2"]["presence-tracked"] is False
+
+
+async def test_wired_hosts_with_test_policy_are_left_to_the_ping() -> None:
+    coordinator = _host_coordinator(("read", "test"), {"m1": {"enabled": True}})
+    await coordinator._async_process_host()
+
+    hosts = coordinator.ds["host"]
+    assert hosts["m1"]["last-seen"] is False
+    assert hosts["m1"]["presence-tracked"] is True
+    assert hosts["m2"]["presence-tracked"] is True
+
+
+def test_untracked_host_is_unavailable() -> None:
+    from custom_components.mikrotik_router.device_tracker import (
+        MikrotikHostDeviceTracker,
+    )
+    from custom_components.mikrotik_router.entity import MikrotikEntity
+
+    tracker = object.__new__(MikrotikHostDeviceTracker)
+    with patch.object(MikrotikEntity, "available", True):
+        tracker._data = {"presence-tracked": False}
+        assert tracker.available is False
+        tracker._data = {"presence-tracked": True}
+        assert tracker.available is True

@@ -165,7 +165,12 @@ def test_every_write_path_has_a_change() -> None:
         ({}, set(ALL_CHANGES)),
         ({CONF_ALLOWED_CHANGES: []}, set()),
         ({CONF_ALLOWED_CHANGES: ["firmware", "bogus"]}, {"firmware"}),
-        ({CONF_ALLOWED_CHANGES: "firmware"}, set(ALL_CHANGES)),
+        # Only an absent option means "everything"; a malformed one fails closed
+        ({CONF_ALLOWED_CHANGES: "firmware"}, set()),
+        ({CONF_ALLOWED_CHANGES: None}, set()),
+        ({CONF_ALLOWED_CHANGES: 1}, set()),
+        ({CONF_ALLOWED_CHANGES: {"ports": True}}, set()),
+        ({CONF_ALLOWED_CHANGES: ["firmware", None, ["x"]]}, {"firmware"}),
     ],
 )
 def test_allowed_changes_option(options, expected) -> None:
@@ -343,11 +348,14 @@ async def test_read_only_entry_has_no_write_entities(hass: HomeAssistant) -> Non
     await _setup(hass, entry)
 
     entities = er.async_entries_for_config_entry(ent_reg, entry.entry_id)
-    domains = {e.domain for e in entities}
+    enabled = [e for e in entities if e.disabled_by is None]
+    domains = {e.domain for e in enabled}
     assert "switch" not in domains
     assert "button" not in domains
-    assert ent_reg.async_get(stale_switch.entity_id) is None
-    assert ent_reg.async_get(stale_button.entity_id) is None
+    # Disabled, not removed: entity_id and history survive the option
+    assert ent_reg.async_get(stale_switch.entity_id).disabled_by is not None
+    assert ent_reg.async_get(stale_button.entity_id).disabled_by is not None
+    assert hass.states.get(stale_switch.entity_id) is None
     assert not hass.states.async_entity_ids("switch")
     assert not hass.states.async_entity_ids("button")
 
@@ -387,9 +395,13 @@ async def test_read_only_entry_has_no_write_entities(hass: HomeAssistant) -> Non
         await hass.async_block_till_done()
 
     entities = er.async_entries_for_config_entry(ent_reg, entry.entry_id)
-    assert "switch" in {e.domain for e in entities}
-    assert "button" in {e.domain for e in entities}
-    assert not [e for e in entities if "_state-" in e.unique_id]
+    enabled = [e for e in entities if e.disabled_by is None]
+    assert "switch" in {e.domain for e in enabled}
+    assert "button" in {e.domain for e in enabled}
+    assert not [e for e in enabled if "_state-" in e.unique_id]
+    # The stale entries came back as the same entities
+    assert ent_reg.async_get(stale_switch.entity_id).disabled_by is None
+    assert ent_reg.async_get(stale_button.entity_id).disabled_by is None
     assert entry.runtime_data.data_coordinator.api.allowed_changes == set(ALL_CHANGES)
 
 
@@ -404,10 +416,11 @@ async def test_updates_allowed_ports_not(hass: HomeAssistant) -> None:
     )
     await _setup(hass, entry)
 
-    assert ent_reg.async_get(stale_port.entity_id) is None
+    assert ent_reg.async_get(stale_port.entity_id).disabled_by is not None
     unique_ids = {
         (e.domain, e.unique_id)
         for e in er.async_entries_for_config_entry(ent_reg, entry.entry_id)
+        if e.disabled_by is None
     }
     assert ("switch", "mikrotik-interface-ether1") not in unique_ids
     assert ("binary_sensor", "mikrotik-interface_state-ether1") in unique_ids
@@ -479,3 +492,124 @@ async def test_user_step_stores_allowed_changes_as_option(hass: HomeAssistant) -
     assert result["type"] == "create_entry"
     assert CONF_ALLOWED_CHANGES not in result["data"]
     assert result["options"] == {CONF_ALLOWED_CHANGES: []}
+
+
+# ---------------------------------------------------------------------------
+# Review 2 M2: query() never returns a writable librouteros path
+# ---------------------------------------------------------------------------
+def test_query_has_no_raw_path_option() -> None:
+    """query(return_list=False) used to hand out a Path that can write."""
+    api = _api()
+    with pytest.raises(TypeError):
+        api.query("/interface", return_list=False)
+    assert not api._connection.mock_calls
+
+
+def test_query_returns_data_not_a_path() -> None:
+    api = _api()
+    api._connection.path.return_value = [{"name": "ether1"}]
+    result = api.query("/interface")
+    assert result == [{"name": "ether1"}]
+    assert isinstance(result, list)
+    # A list has no update(), so it can't write
+    assert not hasattr(result, "update")
+
+
+def test_query_positional_arguments_cannot_select_a_raw_path() -> None:
+    """The old fourth positional argument was return_list."""
+    api = _api()
+    api._connection.path.return_value = [{"name": "ether1"}]
+    assert api.query("/interface", None, None, False) == [{"name": "ether1"}]
+
+
+# ---------------------------------------------------------------------------
+# Review 2 M1: absolute or climbing command names can't leave the guarded path
+# ---------------------------------------------------------------------------
+BYPASS_COMMANDS = [
+    "/interface/set",
+    "/system/reboot",
+    "../interface/set",
+    "reboot/../../interface/set",
+    "snapshot//take",
+    "./reboot",
+    "",
+    "\x00",
+]
+
+
+@pytest.mark.parametrize("command", BYPASS_COMMANDS)
+def test_execute_refuses_escaping_commands(command) -> None:
+    """Firmware is allowed, ports are not: "/system" + "/interface/set" must fail."""
+    api = _api(["firmware"])
+    with pytest.raises(ApiReadOnly):
+        api.execute("/system", command, None, None, {".id": "*1", "disabled": True})
+    assert not api._connection.mock_calls
+
+
+@pytest.mark.parametrize("command", BYPASS_COMMANDS)
+def test_query_refuses_escaping_commands(command) -> None:
+    api = _api(["firmware"])
+    with pytest.raises(ApiReadOnly):
+        api.query("/system", command=command, args={".id": "*1"})
+    assert not api._connection.mock_calls
+
+
+def test_escaping_command_refused_even_with_every_change_allowed() -> None:
+    api = _api(ALL_CHANGES)
+    with pytest.raises(ApiReadOnly):
+        api.execute("/system", "/interface/set", None, None)
+    assert not api._connection.mock_calls
+
+
+@pytest.mark.parametrize("path", ["/system/../interface", "/interface/", "//interface", "interface"])
+def test_unlisted_paths_are_refused(path) -> None:
+    """Path spellings that resolve onto a write path don't match its entry."""
+    api = _api(["firmware"])
+    with pytest.raises(ApiReadOnly):
+        api.set_value(path, "name", "ether1", "disabled", True)
+    with pytest.raises(ApiReadOnly):
+        api.execute(path, "set", None, None)
+    assert not api._connection.mock_calls
+
+
+def test_plain_commands_still_run() -> None:
+    api = _api(["firmware"])
+    response = api._connection.path.return_value
+    response.return_value = iter([])
+    assert api.execute("/system", "reboot", None, None)
+    response.assert_called_once_with("reboot")
+    api = _api(["accounting"])
+    api._connection.path.return_value.return_value = iter([])
+    assert api.take_client_traffic_snapshot(True) == 0
+    api._connection.path.return_value.assert_called_once_with("snapshot/take")
+
+
+async def test_user_and_default_disabled_entities_stay_disabled(
+    hass: HomeAssistant,
+) -> None:
+    """Review 2 L2: only entries disabled for the option are enabled again."""
+    from homeassistant.helpers.entity_registry import RegistryEntryDisabler
+
+    entry = _entry(list(ALL_CHANGES))
+    entry.add_to_hass(hass)
+    ent_reg = er.async_get(hass)
+    by_user = ent_reg.async_get_or_create(
+        "switch",
+        DOMAIN,
+        "mikrotik-interface-ether1",
+        config_entry=entry,
+        disabled_by=RegistryEntryDisabler.USER,
+    )
+    by_default = ent_reg.async_get_or_create(
+        "switch",
+        DOMAIN,
+        "mikrotik-nat-1",
+        config_entry=entry,
+        disabled_by=RegistryEntryDisabler.INTEGRATION,
+    )
+    await _setup(hass, entry)
+    assert ent_reg.async_get(by_user.entity_id).disabled_by == RegistryEntryDisabler.USER
+    assert (
+        ent_reg.async_get(by_default.entity_id).disabled_by
+        == RegistryEntryDisabler.INTEGRATION
+    )

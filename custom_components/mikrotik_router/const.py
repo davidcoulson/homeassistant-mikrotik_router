@@ -27,6 +27,8 @@ DEFAULT_SSL = True
 DEFAULT_VERIFY_SSL = True
 # Entries created before verify_ssl existed never verified certificates
 LEGACY_VERIFY_SSL = False
+# Option of an earlier build, replaced by allowed_changes (migrated in __init__)
+LEGACY_READ_ONLY = "read_only"
 
 CONF_SCAN_INTERVAL = "scan_interval"
 DEFAULT_SCAN_INTERVAL = 30

@@ -8,7 +8,8 @@ import logging
 import re
 from time import monotonic
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dataclasses import dataclass
 from ipaddress import ip_address, IPv4Network
 
@@ -17,9 +18,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import entity_registry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.util.dt import get_default_time_zone, utcnow
+from homeassistant.util.dt import utcnow
 
-from .helper import allowed_changes, parse_routeros_major_minor, track_hosts_timeout
+from .helper import (
+    allowed_changes,
+    is_sfp_port,
+    parse_routeros_major_minor,
+    track_hosts_timeout,
+)
 
 
 from homeassistant.const import (
@@ -96,7 +102,7 @@ ETHERNET_MONITOR_SFP_VALS = [
     {"name": "full-duplex", "default": "unknown"},
     {"name": "advertising", "default": "unknown"},
     {"name": "link-partner-advertising", "default": "unknown"},
-    {"name": "sfp-temperature", "default": 0},
+    {"name": "sfp-temperature", "default": None},
     {"name": "sfp-supply-voltage", "default": "unknown"},
     {"name": "sfp-module-present", "default": "unknown"},
     {"name": "sfp-tx-bias-current", "default": "unknown"},
@@ -168,7 +174,12 @@ _LINK_RATE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([KMGT]?)bps\s*$", re.IGNORECASE
 _RATE_MULTIPLIER = {"": 1e-6, "K": 1e-3, "M": 1, "G": 1e3, "T": 1e6}
 _ROUTEROS_TIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%b/%d/%Y %H:%M:%S")
 
+# A reading is published when it moves by the delta or the published value is
+# MAX_AGE seconds old, so a threshold automation can lag by up to that.
+# CPU load is a percentage that flickers by a point; temperatures are
+# reported in whole degrees, so any real change (>= 1) is published at once.
 HYSTERESIS_DELTA = 2
+HYSTERESIS_TEMPERATURE_DELTA = 0.5
 HYSTERESIS_MAX_AGE = 300
 
 
@@ -210,20 +221,45 @@ def _duplex(full_duplex) -> str | None:
     return None
 
 
-def _parse_routeros_time(value) -> datetime | None:
+_GMT_OFFSET = re.compile(r"^([+-])(\d{1,2}):?(\d{2})$")
+
+
+def _router_time_zone(clock) -> tzinfo | None:
+    """Return the router's time zone from a /system/clock row, or None.
+
+    Uses the IANA name when it is known here, else the current GMT offset.
+    """
+    if not isinstance(clock, dict):
+        return None
+    name = clock.get("time-zone-name")
+    if isinstance(name, str) and name:
+        try:
+            return ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            pass
+    offset = clock.get("gmt-offset")
+    if isinstance(offset, int) and not isinstance(offset, bool):
+        return timezone(timedelta(seconds=offset))
+    if isinstance(offset, str) and (match := _GMT_OFFSET.match(offset.strip())):
+        delta = timedelta(hours=int(match.group(2)), minutes=int(match.group(3)))
+        return timezone(-delta if match.group(1) == "-" else delta)
+    return None
+
+
+def _parse_routeros_time(value, tz: tzinfo | None) -> datetime | None:
     """Parse a RouterOS local time ("2024-01-05 10:22:33" or "jan/05/2024 ...").
 
-    RouterOS reports the router's local time without a zone; Home
-    Assistant's time zone is assumed.
+    RouterOS reports the router's local time without a zone, so the router's
+    time zone (from /system/clock) is needed; without it the time is unknown.
     """
-    if not isinstance(value, str) or not value:
+    if tz is None or not isinstance(value, str) or not value:
         return None
     for fmt in _ROUTEROS_TIME_FORMATS:
         try:
             parsed = datetime.strptime(value.strip(), fmt)
         except ValueError:
             continue
-        return parsed.replace(tzinfo=get_default_time_zone())
+        return parsed.replace(tzinfo=tz)
     return None
 
 
@@ -306,6 +342,11 @@ class MikrotikTrackerCoordinator(DataUpdateCoordinator[None]):
     async def _async_update_data(self):
         """Ping wired hosts and return the host snapshot."""
         coordinator = self.coordinator
+        if not coordinator.last_update_success:
+            # Wireless and CAPsMAN presence comes from the main poll. While it
+            # fails, the cached rows are stale: don't keep stamping hosts as
+            # just seen. The tracker entities turn unavailable meanwhile.
+            raise UpdateFailed("The router poll is failing, host presence unknown")
         hosts = coordinator.ds["host"]
         if coordinator.option_track_network_hosts:
             if not coordinator.host_tracking_initialized:
@@ -497,6 +538,8 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         self.interface_traffic_last_run = None
         self._published = {}
         self._monitor_batch = True
+        # The router's time zone, read from /system/clock in the slow tier
+        self._router_tz = None
         self.rebootcheck = 0
         # Tiered polling: static config is read every SLOW_POLL_INTERVAL,
         # or on the next poll after force_full_refresh is set.
@@ -1107,6 +1150,10 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         ):
             self._get_ethernet_config()
 
+        # Link-change times are in the router's local time
+        if self._slow_poll:
+            self._get_router_time_zone()
+
         # Udpate virtual interfaces
         bonding = False
         sfp_ports = []
@@ -1126,22 +1173,27 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 ] = f"{vals['port-mac-address']}-{vals['name']}"
 
             if vals["type"] == "ether" and vals.get(".id"):
-                if vals.get("sfp-shutdown-temperature", "") != "":
+                if is_sfp_port(vals):
                     sfp_ports.append(vals[".id"])
                 else:
                     copper_ports.append(vals[".id"])
 
+        if self._slow_poll:
+            # One refused batch (a port .id removed between polls) only costs
+            # per-port calls until the next slow tier, then batching is retried
+            self._monitor_batch = True
         self._monitor_ethernet(sfp_ports, ETHERNET_MONITOR_SFP_VALS)
         self._monitor_ethernet(copper_ports, ETHERNET_MONITOR_VALS)
 
+        router_tz = getattr(self, "_router_tz", None)
         for vals in self.ds["interface"].values():
             vals["link-speed"] = _link_speed(vals.get("rate"))
             vals["duplex"] = _duplex(vals.get("full-duplex"))
             changes = [
                 parsed
                 for parsed in (
-                    _parse_routeros_time(vals.get("last-link-up-time")),
-                    _parse_routeros_time(vals.get("last-link-down-time")),
+                    _parse_routeros_time(vals.get("last-link-up-time"), router_tz),
+                    _parse_routeros_time(vals.get("last-link-down-time"), router_tz),
                 )
                 if parsed is not None
             ]
@@ -1264,7 +1316,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 {"name": "default-name"},
                 {"name": "name", "default_val": "default-name"},
                 {"name": "poe-out", "default": "N/A"},
-                {"name": "sfp-shutdown-temperature", "default": 0},
+                {"name": "sfp-shutdown-temperature", "default": None},
             ],
             skip=[
                 {"name": "type", "value": "bridge"},
@@ -1276,6 +1328,17 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 {"name": "type", "value": "ovpn-in"},
             ],
         )
+
+    # ---------------------------
+    #   _get_router_time_zone
+    # ---------------------------
+    def _get_router_time_zone(self) -> None:
+        """Read the router's time zone (None when it can't be told)."""
+        clock = self.api.query("/system/clock", ignore_trap=True)
+        zone = _router_time_zone(clock[0]) if clock else None
+        if zone is not None or clock is not None:
+            # Keep the last known zone when the read itself failed
+            self._router_tz = zone
 
     # ---------------------------
     #   _monitor_ethernet
@@ -1827,17 +1890,24 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
 
         for key in self.ds["health"]:
             if "temperature" in key:
-                self._apply_hysteresis("health", key)
+                self._apply_hysteresis(
+                    "health", key, delta=HYSTERESIS_TEMPERATURE_DELTA
+                )
+        # Forget sensors the router no longer reports
+        for path, key in [k for k in self._published if k[0] == "health"]:
+            if key not in self.ds["health"]:
+                del self._published[(path, key)]
 
     # ---------------------------
     #   _apply_hysteresis
     # ---------------------------
-    def _apply_hysteresis(self, path, key) -> None:
+    def _apply_hysteresis(self, path, key, delta=HYSTERESIS_DELTA) -> None:
         """Hold a jittery value until it moves enough or gets old.
 
-        CPU load and temperatures flicker by a point every poll, and each
-        change is a recorder row. Publish a new value only when it differs
-        by HYSTERESIS_DELTA or the last one is HYSTERESIS_MAX_AGE old.
+        CPU load flickers by a point every poll, and each change is a
+        recorder row. Publish a new value only when it differs by delta
+        or the last one is HYSTERESIS_MAX_AGE old. An automation on a
+        threshold sees a change at most that late.
         """
         value = self.ds[path].get(key)
         try:
@@ -1851,7 +1921,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         if published is not None:
             old_value, old_number, since = published
             if (
-                abs(number - old_number) < HYSTERESIS_DELTA
+                abs(number - old_number) < delta
                 and now - since < HYSTERESIS_MAX_AGE
             ):
                 self.ds[path][key] = old_value
@@ -2619,8 +2689,21 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 if key not in self.ds["host"][uid]:
                     self.ds["host"][uid][key] = default
 
-        # if not self.host_tracking_initialized:
-        #     await self.async_ping_tracked_hosts()
+        # Without the "test" policy nothing pings wired hosts. A host in the
+        # bridge host table (learned on a port, aged out by the router) is
+        # then the evidence it is present; a host without any evidence
+        # source is unknown instead of permanently away.
+        can_ping = "test" in self.ds["access"]
+        now = utcnow()
+        for uid, vals in self.ds["host"].items():
+            if vals["source"] in ("capsman", "wireless"):
+                vals["presence-tracked"] = True
+                continue
+            bridged = self.ds["bridge_host"].get(uid, {}).get("enabled", False)
+            if not can_ping and bridged:
+                vals["available"] = True
+                vals["last-seen"] = now
+            vals["presence-tracked"] = can_ping or bool(bridged)
 
         # Process hosts
         self.ds["resource"]["clients_wired"] = 0
@@ -2905,10 +2988,13 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
 
         self._sync_client_traffic_hosts(
             {
-                "previous-bytes-up": 0.0,
-                "previous-bytes-down": 0.0,
-                "tx": 0.0,
-                "rx": 0.0,
+                # Per-device baseline: counters and the time they were read.
+                # Unknown until a device has been seen twice.
+                "previous-bytes-up": None,
+                "previous-bytes-down": None,
+                "previous-time": None,
+                "tx": None,
+                "rx": None,
                 "available": False,
                 "local_accounting": False,
             }
@@ -2935,7 +3021,9 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             ],
         )
 
-        time_diff = self.api.take_client_traffic_snapshot(False)
+        # Keeps the shared snapshot clock moving; each device is timed on its own
+        self.api.take_client_traffic_snapshot(False)
+        now = monotonic()
 
         if not kid_control_devices_data:
             if "kid-control-devices" not in self.notified_flags:
@@ -2954,16 +3042,26 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
 
             self.ds["client_traffic"][uid]["available"] = vals["enabled"]
 
-            current_tx = vals["bytes-up"]
-            previous_tx = self.ds["client_traffic"][uid]["previous-bytes-up"]
-            if time_diff:
-                delta_tx = max(0, current_tx - previous_tx)
-                self.ds["client_traffic"][uid]["tx"] = _round_rate(delta_tx / time_diff)
-            self.ds["client_traffic"][uid]["previous-bytes-up"] = current_tx
+            device = self.ds["client_traffic"][uid]
+            elapsed = None
+            if device.get("previous-time") is not None:
+                elapsed = now - device["previous-time"]
+                if elapsed < 1:
+                    # Read twice in a moment (forced refresh): too short to rate
+                    continue
 
-            current_rx = vals["bytes-down"]
-            previous_rx = self.ds["client_traffic"][uid]["previous-bytes-down"]
-            if time_diff:
-                delta_rx = max(0, current_rx - previous_rx)
-                self.ds["client_traffic"][uid]["rx"] = _round_rate(delta_rx / time_diff)
-            self.ds["client_traffic"][uid]["previous-bytes-down"] = current_rx
+            # A rate needs two samples of this device. Bytes since a missed
+            # sample are divided by the time since the device's last sample,
+            # and a new device starts from unknown instead of its lifetime
+            # counter.
+            for rate, counter, previous in (
+                ("tx", "bytes-up", "previous-bytes-up"),
+                ("rx", "bytes-down", "previous-bytes-down"),
+            ):
+                delta = _counter_delta(vals[counter], device.get(previous))
+                if delta is not None and elapsed and elapsed > 0:
+                    device[rate] = _round_rate(delta / elapsed)
+                else:
+                    device[rate] = None
+                device[previous] = vals[counter]
+            device["previous-time"] = now

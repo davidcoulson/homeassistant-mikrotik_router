@@ -116,6 +116,17 @@ class MikrotikHostDeviceTracker(MikrotikDeviceTracker):
         return track_hosts_timeout(self._config_entry.options)
 
     @property
+    def available(self) -> bool:
+        """Return False for a wired host nothing can tell the presence of.
+
+        Without the "test" policy hosts are not pinged, so one that is not in
+        the bridge host table has no presence evidence: unknown, not away.
+        """
+        if not super().available:
+            return False
+        return self._data.get("presence-tracked", True)
+
+    @property
     def is_connected(self) -> bool:
         """Return true if the host is connected to the network."""
         if not self.option_track_network_hosts:

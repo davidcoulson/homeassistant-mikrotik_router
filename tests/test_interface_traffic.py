@@ -277,14 +277,15 @@ def test_duplex() -> None:
 
 def test_parse_routeros_time() -> None:
     tz = dt_util.get_default_time_zone()
-    assert _parse_routeros_time("2024-01-05 10:22:33") == datetime(
+    assert _parse_routeros_time("2024-01-05 10:22:33", tz) == datetime(
         2024, 1, 5, 10, 22, 33, tzinfo=tz
     )
-    assert _parse_routeros_time("jan/05/2024 10:22:33") == datetime(
+    assert _parse_routeros_time("jan/05/2024 10:22:33", tz) == datetime(
         2024, 1, 5, 10, 22, 33, tzinfo=tz
     )
-    assert _parse_routeros_time("") is None
-    assert _parse_routeros_time("garbage") is None
+    assert _parse_routeros_time("", tz) is None
+    assert _parse_routeros_time("garbage", tz) is None
+    assert _parse_routeros_time("2024-01-05 10:22:33", None) is None
 
 
 def test_link_fields_from_monitor() -> None:
@@ -299,6 +300,7 @@ def test_link_fields_from_monitor() -> None:
     ]
     coordinator = _coordinator(rows)
     monitor = [{"name": "ether1", "status": "link-ok", "rate": "10Gbps", "full-duplex": True}]
+    coordinator._router_tz = dt_util.UTC  # read from /system/clock in the slow tier
     coordinator.api.query.side_effect = lambda path, **kw: (
         monitor if kw.get("command") == "monitor" else rows if path == "/interface" else None
     )
@@ -306,7 +308,7 @@ def test_link_fields_from_monitor() -> None:
     assert vals["link-speed"] == 10000
     assert vals["duplex"] == "full"
     assert vals["last-link-change"] == datetime(
-        2024, 1, 5, 10, 22, 33, tzinfo=dt_util.get_default_time_zone()
+        2024, 1, 5, 10, 22, 33, tzinfo=dt_util.UTC
     )
 
 

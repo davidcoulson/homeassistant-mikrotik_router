@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import posixpath
 import ssl
 from time import monotonic, time
 from threading import RLock
@@ -387,9 +388,47 @@ class MikrotikAPI:
         raise ApiReadOnly(action)
 
     # ---------------------------
+    #   _require_plain_command
+    # ---------------------------
+    def _require_plain_command(self, path: str, command) -> None:
+        """Refuse a command that could leave the path it was authorised for.
+
+        librouteros joins path and command with posixpath.join, so an absolute
+        command ("/interface/set") replaces the path and ".." climbs out of it.
+        Only a plain relative command, such as "monitor" or "snapshot/take",
+        stays below the path that _require_change_allowed checked.
+        """
+        if (
+            not isinstance(command, str)
+            or not command
+            or command.startswith("/")
+            or posixpath.normpath(command) != command
+            or ".." in command.split("/")
+            or "\x00" in command
+        ):
+            _LOGGER.warning("Refused RouterOS command %r on %s: not a plain command", command, self._host)
+            raise ApiReadOnly(f"{path} {command!r}")
+
+    # ---------------------------
     #   query
     # ---------------------------
     def query(
+        self,
+        path,
+        command=None,
+        args=None,
+        ignore_trap=False,
+    ) -> Optional(list):
+        """Retrieve data from Mikrotik API as a list.
+
+        The raw librouteros path is never handed out: it can write.
+        """
+        return self._query(path, command, args, True, ignore_trap)
+
+    # ---------------------------
+    #   _query
+    # ---------------------------
+    def _query(
         self,
         path,
         command=None,
@@ -405,6 +444,8 @@ class MikrotikAPI:
         if args is None:
             args = {}
 
+        if command is not None:
+            self._require_plain_command(path, command)
         if command and command not in QUERY_COMMANDS:
             self._require_change_allowed(path, f"{path} {command}")
 
@@ -485,7 +526,7 @@ class MikrotikAPI:
             if not self.connection_check():
                 return False
 
-            response = self.query(path, return_list=False)
+            response = self._query(path, return_list=False)
             if response is None:
                 return False
 
@@ -516,6 +557,7 @@ class MikrotikAPI:
     # ---------------------------
     def execute(self, path, command, param, value, attributes=None) -> bool:
         """Execute a command"""
+        self._require_plain_command(path, command)
         self._require_change_allowed(path, f"{path} {command}")
         # Keep the optional lookup and command on the same socket transaction.
         with self.lock:
@@ -525,7 +567,7 @@ class MikrotikAPI:
             if not self.connection_check():
                 return False
 
-            response = self.query(path, return_list=False)
+            response = self._query(path, return_list=False)
             if response is None:
                 return False
 
@@ -569,7 +611,7 @@ class MikrotikAPI:
             if not self.connection_check():
                 return False
 
-            response = self.query("/system/script", return_list=False)
+            response = self._query("/system/script", return_list=False)
             if response is None:
                 return False
 
@@ -612,7 +654,7 @@ class MikrotikAPI:
             if not self.connection_check():
                 return None
 
-            response = self.query("/ping", return_list=False)
+            response = self._query("/ping", return_list=False)
             if response is None:
                 return None
 
@@ -676,7 +718,7 @@ class MikrotikAPI:
 
         if use_accounting:
             with self.lock:
-                accounting = self.query("/ip/accounting", return_list=False)
+                accounting = self._query("/ip/accounting", return_list=False)
                 if accounting is None:
                     return 0
 

@@ -175,7 +175,7 @@ class MikrotikControllerConfigFlow(ConfigFlow, domain=DOMAIN):
     """MikrotikControllerConfigFlow class"""
 
     VERSION = 3
-    MINOR_VERSION = 3
+    MINOR_VERSION = 4
     CONNECTION_CLASS = CONN_CLASS_LOCAL_POLL
 
     def __init__(self):
