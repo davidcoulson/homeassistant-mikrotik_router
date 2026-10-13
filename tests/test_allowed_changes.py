@@ -512,3 +512,65 @@ def test_query_positional_arguments_cannot_select_a_raw_path() -> None:
     api = _api()
     api._connection.path.return_value = [{"name": "ether1"}]
     assert api.query("/interface", None, None, False) == [{"name": "ether1"}]
+
+
+# ---------------------------------------------------------------------------
+# Review 2 M1: absolute or climbing command names can't leave the guarded path
+# ---------------------------------------------------------------------------
+BYPASS_COMMANDS = [
+    "/interface/set",
+    "/system/reboot",
+    "../interface/set",
+    "reboot/../../interface/set",
+    "snapshot//take",
+    "./reboot",
+    "",
+    "\x00",
+]
+
+
+@pytest.mark.parametrize("command", BYPASS_COMMANDS)
+def test_execute_refuses_escaping_commands(command) -> None:
+    """Firmware is allowed, ports are not: "/system" + "/interface/set" must fail."""
+    api = _api(["firmware"])
+    with pytest.raises(ApiReadOnly):
+        api.execute("/system", command, None, None, {".id": "*1", "disabled": True})
+    assert not api._connection.mock_calls
+
+
+@pytest.mark.parametrize("command", BYPASS_COMMANDS)
+def test_query_refuses_escaping_commands(command) -> None:
+    api = _api(["firmware"])
+    with pytest.raises(ApiReadOnly):
+        api.query("/system", command=command, args={".id": "*1"})
+    assert not api._connection.mock_calls
+
+
+def test_escaping_command_refused_even_with_every_change_allowed() -> None:
+    api = _api(ALL_CHANGES)
+    with pytest.raises(ApiReadOnly):
+        api.execute("/system", "/interface/set", None, None)
+    assert not api._connection.mock_calls
+
+
+@pytest.mark.parametrize("path", ["/system/../interface", "/interface/", "//interface", "interface"])
+def test_unlisted_paths_are_refused(path) -> None:
+    """Path spellings that resolve onto a write path don't match its entry."""
+    api = _api(["firmware"])
+    with pytest.raises(ApiReadOnly):
+        api.set_value(path, "name", "ether1", "disabled", True)
+    with pytest.raises(ApiReadOnly):
+        api.execute(path, "set", None, None)
+    assert not api._connection.mock_calls
+
+
+def test_plain_commands_still_run() -> None:
+    api = _api(["firmware"])
+    response = api._connection.path.return_value
+    response.return_value = iter([])
+    assert api.execute("/system", "reboot", None, None)
+    response.assert_called_once_with("reboot")
+    api = _api(["accounting"])
+    api._connection.path.return_value.return_value = iter([])
+    assert api.take_client_traffic_snapshot(True) == 0
+    api._connection.path.return_value.assert_called_once_with("snapshot/take")
