@@ -34,6 +34,9 @@ from homeassistant.util import slugify
 from .const import (
     PLATFORMS,
     DOMAIN,
+    ALL_CHANGES,
+    CONF_ALLOWED_CHANGES,
+    LEGACY_READ_ONLY,
     LEGACY_VERIFY_SSL,
     CHANGE_SCRIPTS,
 )
@@ -668,6 +671,17 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: MikrotikConfigE
     if new_version == 3 and new_minor_version < 3:
         _async_migrate_temperature_sensor_units(hass, config_entry)
         new_minor_version = 3
+
+    if new_version == 3 and new_minor_version < 4:
+        # The removed "read_only" option must keep meaning "no changes".
+        legacy_read_only = new_options.pop(LEGACY_READ_ONLY, None)
+        legacy_read_only = new_data.pop(LEGACY_READ_ONLY, legacy_read_only)
+        if CONF_ALLOWED_CHANGES not in new_options and legacy_read_only is not None:
+            # Anything but an explicit false is treated as read-only
+            new_options[CONF_ALLOWED_CHANGES] = (
+                list(ALL_CHANGES) if legacy_read_only is False else []
+            )
+        new_minor_version = 4
 
     if (
         new_data != config_entry.data
