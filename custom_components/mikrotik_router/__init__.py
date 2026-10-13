@@ -265,6 +265,9 @@ def _async_router_identifier(
     """
     serial_number = f"{coordinator.data['routerboard']['serial-number']}"
     if serial_number.strip().casefold() not in INVALID_ROUTER_IDENTIFIERS:
+        _async_rekey_placeholder_router_device(
+            hass, config_entry, (DOMAIN, serial_number)
+        )
         return (DOMAIN, serial_number)
 
     fallback = (DOMAIN, config_entry.entry_id)
@@ -302,6 +305,51 @@ def _async_router_identifier(
         break
 
     return fallback
+
+
+# ---------------------------
+#   _async_rekey_placeholder_router_device
+# ---------------------------
+def _async_rekey_placeholder_router_device(
+    hass: HomeAssistant,
+    config_entry: MikrotikConfigEntry,
+    identifier: tuple[str, str],
+) -> None:
+    """Re-key a placeholder router device to a serial that is now readable.
+
+    A board whose first poll had no valid serial registered its router device
+    under the config entry ID (or "N/A"/"unknown"). Create the real device
+    in place instead of beside it, so the child devices keep their parent.
+    """
+    registry = device_registry.async_get(hass)
+    if registry.async_get_device_by_identifier(identifier, config_entry.entry_id):
+        return
+
+    placeholders = {config_entry.entry_id} | set(INVALID_ROUTER_IDENTIFIERS)
+    for device in device_registry.async_entries_for_config_entry(
+        registry, config_entry.entry_id
+    ):
+        router_ids = {
+            value
+            for domain, value in device.identifiers
+            if domain == DOMAIN and not value.startswith(f"{config_entry.entry_id}-")
+        }
+        if not router_ids or not all(
+            value == config_entry.entry_id or value.strip().casefold() in placeholders
+            for value in router_ids
+        ):
+            continue
+
+        registry.async_update_device(
+            device.id,
+            new_identifiers={
+                (domain, value)
+                for domain, value in device.identifiers
+                if not (domain == DOMAIN and value in router_ids)
+            }
+            | {identifier},
+        )
+        return
 
 
 # ---------------------------
@@ -461,10 +509,27 @@ def _async_remove_orphaned_devices(
             dev_reg, config_entry.entry_id
         ),
     )
-    for device in devices:
-        if device.id != router_device_id and device.id not in used_device_ids:
-            _LOGGER.debug("Removing orphaned device %s (%s)", device.name, device.id)
-            dev_reg.async_remove_device(device.id)
+    removable = {
+        device.id: device
+        for device in devices
+        if device.id != router_device_id and device.id not in used_device_ids
+    }
+    # A device that is the parent of a device we keep must stay too
+    changed = True
+    while changed:
+        changed = False
+        for device in devices:
+            if device.id in removable:
+                continue
+            parent_id = getattr(device, "parent_device_id", None) or getattr(
+                device, "via_device_id", None
+            )
+            if parent_id in removable:
+                del removable[parent_id]
+                changed = True
+    for device in removable.values():
+        _LOGGER.debug("Removing orphaned device %s (%s)", device.name, device.id)
+        dev_reg.async_remove_device(device.id)
 
 
 # ---------------------------

@@ -154,3 +154,75 @@ async def test_unreadable_serial_keeps_existing_router_device(
     assert dev_reg.async_get(legacy.id) is not None
     assert entry.runtime_data.router_device_id == legacy.id
     assert dev_reg.async_get_devices(identifiers={(DOMAIN, entry.entry_id)}) == []
+
+
+async def test_recovered_serial_rekeys_placeholder_and_keeps_children(
+    hass: HomeAssistant,
+) -> None:
+    """Review 2 H2: a placeholder router device gets the serial in place, its
+    children keep their parent and the orphan cleanup deletes nothing."""
+    entry = _entry(hass, "Alpha", "192.0.2.1")
+    await _setup(hass, entry)
+    dev_reg = dr.async_get(hass)
+    ent_reg = er.async_get(hass)
+    router = _router(dev_reg, entry)
+    children = {
+        d.id: d.identifiers
+        for d in dr.async_entries_for_parent_device(dev_reg, router.id)
+    }
+    assert children
+    entity_ids = {
+        e.entity_id for e in er.async_entries_for_config_entry(ent_reg, entry.entry_id)
+    }
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    # The board now reports its real serial
+    await _setup(hass, entry, _fake_update)
+
+    new_router = dev_reg.async_get(router.id)
+    assert new_router is not None
+    assert new_router.identifiers == {(DOMAIN, "HEX123")}
+    assert entry.runtime_data.router_device_id == router.id
+    for child_id, identifiers in children.items():
+        child = dev_reg.async_get(child_id)
+        assert child is not None
+        assert child.identifiers == identifiers
+        assert child.parent_device_id == router.id
+    assert entity_ids <= {
+        e.entity_id for e in er.async_entries_for_config_entry(ent_reg, entry.entry_id)
+    }
+
+
+async def test_orphan_cleanup_keeps_parent_of_retained_device(
+    hass: HomeAssistant,
+) -> None:
+    from custom_components.mikrotik_router import _async_remove_orphaned_devices
+
+    entry = _entry(hass, "Alpha", "192.0.2.1")
+    dev_reg = dr.async_get(hass)
+    ent_reg = er.async_get(hass)
+    router = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "R")}
+    )
+    parent = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, "P")},
+    )
+    child = dev_reg.async_get_or_create_child(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, "C")},
+        parent_device_id=parent.id,
+    )
+    empty = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "E")}
+    )
+    ent_reg.async_get_or_create(
+        "sensor", DOMAIN, "u1", config_entry=entry, device_id=child.id
+    )
+
+    _async_remove_orphaned_devices(hass, entry, router.id)
+
+    assert dev_reg.async_get(parent.id) is not None
+    assert dev_reg.async_get(child.id) is not None
+    assert dev_reg.async_get(empty.id) is None
