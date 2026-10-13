@@ -1173,6 +1173,10 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 else:
                     copper_ports.append(vals[".id"])
 
+        if self._slow_poll:
+            # One refused batch (a port .id removed between polls) only costs
+            # per-port calls until the next slow tier, then batching is retried
+            self._monitor_batch = True
         self._monitor_ethernet(sfp_ports, ETHERNET_MONITOR_SFP_VALS)
         self._monitor_ethernet(copper_ports, ETHERNET_MONITOR_VALS)
 

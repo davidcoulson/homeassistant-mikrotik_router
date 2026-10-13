@@ -184,3 +184,23 @@ def test_unreadable_clock_keeps_last_zone_and_unreadable_zone_is_unknown() -> No
     coordinator.api.query.return_value = [{"time-zone-name": "manual"}]
     coordinator._get_router_time_zone()
     assert coordinator._router_tz is None
+
+
+# L1: a refused monitor batch is retried in the next slow tier
+def test_monitor_batch_is_retried_after_a_refusal() -> None:
+    from custom_components.mikrotik_router.coordinator import ETHERNET_MONITOR_VALS
+
+    coordinator = _coordinator(
+        {"ether1": {"name": "ether1", "default-name": "ether1", "type": "ether"}}
+    )
+    coordinator.api.connected.return_value = True
+    calls = []
+
+    def query(path, **kw):
+        calls.append(kw["args"])
+        return None if "numbers" in kw["args"] else [{"name": "ether1", "status": "link-ok"}]
+
+    coordinator.api.query.side_effect = query
+    coordinator._monitor_ethernet(["*1", "*2"], ETHERNET_MONITOR_VALS)
+    assert coordinator._monitor_batch is False
+    assert [("numbers" in c) for c in calls] == [True, False, False]

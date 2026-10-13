@@ -188,8 +188,13 @@ def test_ethernet_monitor_falls_back_per_port() -> None:
     assert coordinator._monitor_batch is False
     assert coordinator.ds["interface"]["ether3"]["status"] == "no-link"
     calls.clear()
+    coordinator._slow_poll = False
     coordinator.get_interface()
     assert not [c for c in calls if c and "numbers" in c]
+    # L1: the next slow tier tries the batch again
+    coordinator._slow_poll = True
+    coordinator.get_interface()
+    assert [c for c in calls if c and "numbers" in c]
 
 
 async def test_tiered_polling(monkeypatch) -> None:
