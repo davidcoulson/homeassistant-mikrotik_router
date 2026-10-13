@@ -1,7 +1,7 @@
 """Host tracker coordinator tests."""
 
 from datetime import timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.core import HomeAssistant
 from homeassistant.util.dt import utcnow
@@ -89,4 +89,26 @@ async def test_tracker_without_test_policy_returns_hosts(hass: HomeAssistant) ->
 
     assert data == {"host": hosts, "routerboard": {"serial-number": "X"}}
     tracker.api.arp_ping.assert_not_called()
+    tracker.coordinator.async_process_host.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Review 2 M8 / M9
+# ---------------------------------------------------------------------------
+async def test_tracker_fails_while_the_router_poll_fails(hass: HomeAssistant) -> None:
+    """M8: cached wireless rows must not be stamped as just seen forever."""
+    import pytest
+    from homeassistant.helpers.update_coordinator import UpdateFailed
+
+    hosts = {"m4": _host("wireless", available=True)}
+    tracker = _tracker(hass, hosts)
+    tracker.coordinator.last_update_success = False
+
+    with pytest.raises(UpdateFailed):
+        await tracker._async_update_data()
+    tracker.coordinator.async_process_host.assert_not_awaited()
+    tracker.api.arp_ping.assert_not_called()
+
+    tracker.coordinator.last_update_success = True
+    await tracker._async_update_data()
     tracker.coordinator.async_process_host.assert_awaited_once()

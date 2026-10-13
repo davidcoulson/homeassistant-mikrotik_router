@@ -337,6 +337,11 @@ class MikrotikTrackerCoordinator(DataUpdateCoordinator[None]):
     async def _async_update_data(self):
         """Ping wired hosts and return the host snapshot."""
         coordinator = self.coordinator
+        if not coordinator.last_update_success:
+            # Wireless and CAPsMAN presence comes from the main poll. While it
+            # fails, the cached rows are stale: don't keep stamping hosts as
+            # just seen. The tracker entities turn unavailable meanwhile.
+            raise UpdateFailed("The router poll is failing, host presence unknown")
         hosts = coordinator.ds["host"]
         if coordinator.option_track_network_hosts:
             if not coordinator.host_tracking_initialized:
