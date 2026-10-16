@@ -765,9 +765,13 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: MikrotikConfigE
 
     if new_version == 3 and new_minor_version < 4:
         # The removed "read_only" option must keep meaning "no changes".
-        legacy_read_only = new_options.pop(LEGACY_READ_ONLY, None)
-        legacy_read_only = new_data.pop(LEGACY_READ_ONLY, legacy_read_only)
-        if CONF_ALLOWED_CHANGES not in new_options and legacy_read_only is not None:
+        has_legacy_option = (
+            LEGACY_READ_ONLY in new_options or LEGACY_READ_ONLY in new_data
+        )
+        legacy_read_only = new_options.pop(
+            LEGACY_READ_ONLY, new_data.pop(LEGACY_READ_ONLY, None)
+        )
+        if CONF_ALLOWED_CHANGES not in new_options and has_legacy_option:
             # Anything but an explicit false is treated as read-only
             new_options[CONF_ALLOWED_CHANGES] = (
                 list(ALL_CHANGES) if legacy_read_only is False else []

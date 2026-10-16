@@ -70,7 +70,7 @@ from .const import (
     CONF_ALLOWED_CHANGES,
     DEFAULT_ALLOWED_CHANGES,
 )
-from .helper import router_unique_id
+from .helper import allowed_changes, router_unique_id
 from .mikrotikapi import MikrotikAPI
 
 _LOGGER = logging.getLogger(__name__)
@@ -415,6 +415,9 @@ class MikrotikControllerOptionsFlowHandler(OptionsFlow):
             self.options.update(user_input)
             return await self.async_step_sensor_select()
 
+        allowed = allowed_changes(
+            {**self.config_entry.data, **self.config_entry.options}
+        )
         return self.async_show_form(
             step_id="basic_options",
             last_step=False,
@@ -422,9 +425,7 @@ class MikrotikControllerOptionsFlowHandler(OptionsFlow):
                 {
                     vol.Optional(
                         CONF_ALLOWED_CHANGES,
-                        default=self.config_entry.options.get(
-                            CONF_ALLOWED_CHANGES, DEFAULT_ALLOWED_CHANGES
-                        ),
+                        default=[change for change in ALL_CHANGES if change in allowed],
                     ): selector.SelectSelector(
                         selector.SelectSelectorConfig(
                             options=list(ALL_CHANGES),
