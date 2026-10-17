@@ -17,6 +17,7 @@ from .const import (
     DEFAULT_PORT,
     DEFAULT_TRACK_HOST_TIMEOUT,
     DOMAIN,
+    LEGACY_READ_ONLY,
     MAX_TRACK_HOST_TIMEOUT,
 )
 
@@ -73,6 +74,9 @@ def format_attribute(attr):
 def allowed_changes(options: Mapping) -> frozenset[str]:
     """Return the kinds of change Home Assistant may make on the router."""
     if CONF_ALLOWED_CHANGES not in options:
+        # Options can be edited before the legacy entry has been migrated.
+        if LEGACY_READ_ONLY in options and options[LEGACY_READ_ONLY] is not False:
+            return frozenset()
         return frozenset(DEFAULT_ALLOWED_CHANGES)
     value = options[CONF_ALLOWED_CHANGES]
     if not isinstance(value, (list, tuple, set, frozenset)):
