@@ -488,3 +488,30 @@ def test_ethernet_stats_skip_ports_that_are_down() -> None:
     assert _poll(coordinator, 60.0)["rx-errors"] == 2
     assert calls[1]["where"] == ("?running=true",)
     assert coordinator.ds["interface"]["ether2"]["rx-errors"] == 5
+
+
+def test_copper_port_monitored_only_on_link_change() -> None:
+    """Between slow tiers a copper port is monitored when it is first seen
+    and when its link changes, not on every poll."""
+    rows = [_row(running=True, **{"link-downs": 0})]
+    coordinator = _coordinator(rows)
+    monitors = []
+
+    def query(path, command=None, **kw):
+        if command == "monitor":
+            monitors.append(kw["args"]["numbers"])
+            return [{"name": "ether1", "status": "link-ok", "rate": "1Gbps"}]
+        return rows if path == "/interface" else None
+
+    coordinator.api.query.side_effect = query
+    assert _poll(coordinator, 0.0)["rate"] == "1Gbps"
+    assert _poll(coordinator, 120.0)["rate"] == "1Gbps"
+    assert monitors == ["*1"]
+
+    rows[0].update(running=False, **{"link-downs": 1})
+    _poll(coordinator, 240.0)
+    assert monitors == ["*1", "*1"]
+
+    coordinator._slow_poll = True
+    _poll(coordinator, 360.0)
+    assert len(monitors) == 3

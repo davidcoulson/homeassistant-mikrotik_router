@@ -1181,6 +1181,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         bonding = False
         sfp_ports = []
         copper_ports = []
+        link_states = self.__dict__.setdefault("_monitor_link_states", {})
         for uid, vals in self.ds["interface"].items():
             if self.ds["interface"][uid]["type"] == "bond":
                 bonding = True
@@ -1196,10 +1197,15 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 ] = f"{vals['port-mac-address']}-{vals['name']}"
 
             if vals["type"] == "ether" and vals.get(".id"):
+                link = (vals["running"], vals["link-downs"], vals["last-link-up-time"])
                 if is_sfp_port(vals):
+                    # SFP readings (temperature, power) move without a link change
                     sfp_ports.append(vals[".id"])
-                else:
+                elif self._slow_poll or link_states.get(vals[".id"]) != link:
+                    # A copper port's status, rate and duplex only change
+                    # with its link, so between slow tiers ask only then
                     copper_ports.append(vals[".id"])
+                link_states[vals[".id"]] = link
 
         if self._slow_poll:
             # One refused batch (a port .id removed between polls) only costs
