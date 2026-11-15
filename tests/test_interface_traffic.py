@@ -50,8 +50,8 @@ def _coordinator(rows, port_traffic=True):
     coordinator.config_entry = MagicMock(options={"sensor_port_traffic": port_traffic})
     coordinator.api = MagicMock()
     coordinator.api.connected.return_value = True
-    coordinator.api.query.side_effect = (
-        lambda path, **kw: rows if path == "/interface" else None
+    coordinator.api.query.side_effect = lambda path, **kw: (
+        rows if path == "/interface" else None
     )
     return coordinator
 
@@ -136,10 +136,16 @@ def test_missing_counters_stay_unknown() -> None:
     vals = _poll(coordinator, 0.0)
     assert vals["rx-errors"] is None
     assert _skip_sensor(
-        coordinator.config_entry, _description("rx-errors"), coordinator.ds["interface"], "ether1"
+        coordinator.config_entry,
+        _description("rx-errors"),
+        coordinator.ds["interface"],
+        "ether1",
     )
     assert not _skip_sensor(
-        coordinator.config_entry, _description("tx-errors"), coordinator.ds["interface"], "ether1"
+        coordinator.config_entry,
+        _description("tx-errors"),
+        coordinator.ds["interface"],
+        "ether1",
     )
 
 
@@ -201,7 +207,10 @@ def test_switch_chip_errors_from_ethernet_stats() -> None:
         }
     ]
     assert not _skip_sensor(
-        coordinator.config_entry, _description("rx-errors"), coordinator.ds["interface"], "ether1"
+        coordinator.config_entry,
+        _description("rx-errors"),
+        coordinator.ds["interface"],
+        "ether1",
     )
 
     # Inside the window: no extra call, values held
@@ -220,7 +229,9 @@ def test_ethernet_stats_not_needed_or_refused() -> None:
     that refuses the stats isn't asked again and the sensors stay skipped."""
     rows = [_row(**{"rx-error": 3})]
     coordinator = _coordinator(rows)
-    calls = _with_ethernet_stats(coordinator, rows, [{"name": "ether1", "rx-fcs-error": 9}])
+    calls = _with_ethernet_stats(
+        coordinator, rows, [{"name": "ether1", "rx-fcs-error": 9}]
+    )
     assert _poll(coordinator, 0.0)["rx-errors"] == 3
     assert not calls
 
@@ -306,10 +317,14 @@ def test_link_fields_from_monitor() -> None:
         )
     ]
     coordinator = _coordinator(rows)
-    monitor = [{"name": "ether1", "status": "link-ok", "rate": "10Gbps", "full-duplex": True}]
+    monitor = [
+        {"name": "ether1", "status": "link-ok", "rate": "10Gbps", "full-duplex": True}
+    ]
     coordinator._router_tz = dt_util.UTC  # read from /system/clock in the slow tier
     coordinator.api.query.side_effect = lambda path, **kw: (
-        monitor if kw.get("command") == "monitor" else rows if path == "/interface" else None
+        monitor
+        if kw.get("command") == "monitor"
+        else rows if path == "/interface" else None
     )
     vals = _poll(coordinator, 0.0)
     assert vals["link-speed"] == 10000
@@ -337,7 +352,9 @@ def test_format_data_rate(bits, text) -> None:
 def test_throughput_sensor_units_and_formatted_attribute() -> None:
     description = _description("traffic_rx")
     assert description.native_unit_of_measurement == UnitOfDataRate.BITS_PER_SECOND
-    assert description.suggested_unit_of_measurement == UnitOfDataRate.MEGABITS_PER_SECOND
+    assert (
+        description.suggested_unit_of_measurement == UnitOfDataRate.MEGABITS_PER_SECOND
+    )
     assert description.device_class == SensorDeviceClass.DATA_RATE
 
     coordinator = MagicMock()
@@ -372,8 +389,16 @@ SERIAL = "HEX123"
 
 async def _fake_update(self):
     self.ds["access"] = ["write", "policy", "reboot", "test"]
-    self.ds["routerboard"] = {"routerboard": True, "serial-number": SERIAL, "model": "CRS305"}
-    self.ds["resource"] = {"board-name": "CRS305", "platform": "MikroTik", "version": "7.20.1"}
+    self.ds["routerboard"] = {
+        "routerboard": True,
+        "serial-number": SERIAL,
+        "model": "CRS305",
+    }
+    self.ds["resource"] = {
+        "board-name": "CRS305",
+        "platform": "MikroTik",
+        "version": "7.20.1",
+    }
     self.ds["interface"] = {
         "sfp-sfpplus1": {
             "default-name": "sfp-sfpplus1",
@@ -452,18 +477,29 @@ async def test_interface_sensors_created(hass: HomeAssistant) -> None:
     # Existing unique ids are unchanged
     for key in ("traffic_rx", "traffic_tx", "rx-total", "tx-total"):
         assert enabled("sensor", key)
-    for key in ("rx-errors", "tx-errors", "rx-drops", "tx-drops", "link-speed", "last-link-change"):
+    for key in (
+        "rx-errors",
+        "tx-errors",
+        "rx-drops",
+        "tx-drops",
+        "link-speed",
+        "last-link-change",
+    ):
         assert enabled("sensor", key)
     for key in ("rx-packets", "tx-packets", "tx-queue-drops", "link-downs", "duplex"):
         assert not enabled("sensor", key)
     # Link status comes with the port traffic option, without the port tracker
     assert enabled("binary_sensor", "interface")
 
-    rx = hass.states.get(entries[("sensor", "mikrotik-traffic_rx-sfp_sfpplus1")].entity_id)
+    rx = hass.states.get(
+        entries[("sensor", "mikrotik-traffic_rx-sfp_sfpplus1")].entity_id
+    )
     assert rx.attributes["unit_of_measurement"] == UnitOfDataRate.MEGABITS_PER_SECOND
     assert float(rx.state) == 1.0
     assert rx.attributes["formatted"] == "1 Mbit/s"
-    speed = hass.states.get(entries[("sensor", "mikrotik-link-speed-sfp_sfpplus1")].entity_id)
+    speed = hass.states.get(
+        entries[("sensor", "mikrotik-link-speed-sfp_sfpplus1")].entity_id
+    )
     assert speed.state == "10000"
 
 
@@ -472,11 +508,23 @@ def test_ethernet_stats_skip_ports_that_are_down() -> None:
     router is asked for running ports only and the down port keeps its
     counters."""
     down = {**_switch_chip_row(), "running": False}
-    up = {**_switch_chip_row(), "default-name": "ether2", "name": "ether2", ".id": "*2", "running": True}
+    up = {
+        **_switch_chip_row(),
+        "default-name": "ether2",
+        "name": "ether2",
+        ".id": "*2",
+        "running": True,
+    }
     rows = [down, up]
     coordinator = _coordinator(rows)
     stats = [
-        {"name": "ether1", "rx-fcs-error": 2, "tx-underrun": 0, "rx-drop": 0, "tx-drop": 0},
+        {
+            "name": "ether1",
+            "rx-fcs-error": 2,
+            "tx-underrun": 0,
+            "rx-drop": 0,
+            "tx-drop": 0,
+        },
         {"name": "ether2", "rx-fcs-error": 1},
     ]
     calls = _with_ethernet_stats(coordinator, rows, stats)

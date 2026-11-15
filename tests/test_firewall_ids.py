@@ -103,13 +103,16 @@ async def _check(hass, entry, ent_reg, old, rules, _setup):
     coordinator = entry.runtime_data.data_coordinator
     await coordinator.async_refresh()
     await hass.async_block_till_done()
-    assert len(
-        [
-            e
-            for e in er.async_entries_for_config_entry(ent_reg, entry.entry_id)
-            if e.domain == "switch" and "-nat-" in e.unique_id
-        ]
-    ) == 3
+    assert (
+        len(
+            [
+                e
+                for e in er.async_entries_for_config_entry(ent_reg, entry.entry_id)
+                if e.domain == "switch" and "-nat-" in e.unique_id
+            ]
+        )
+        == 3
+    )
     assert hass.states.get(old.entity_id).state == "on"
 
     # Reload is idempotent

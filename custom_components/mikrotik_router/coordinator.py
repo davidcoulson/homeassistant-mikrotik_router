@@ -81,6 +81,7 @@ from .vendor_lookup import VendorLookup
 
 _LOGGER = logging.getLogger(__name__)
 
+
 def is_valid_ip(address):
     try:
         ipaddress.ip_address(address)
@@ -371,9 +372,7 @@ class MikrotikTrackerCoordinator(DataUpdateCoordinator[None]):
 
             # Pinging needs the "test" policy. Without it, wireless, CAPsMAN
             # and DHCP hosts are still tracked from the main poll.
-            if "test" in coordinator.ds["access"] and (
-                targets := self._ping_targets()
-            ):
+            if "test" in coordinator.ds["access"] and (targets := self._ping_targets()):
                 results = await self.hass.async_add_executor_job(
                     self._ping_hosts, targets
                 )
@@ -1361,7 +1360,9 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 command="print",
                 # The full row has about 90 fields and takes 1.5 s on a
                 # 61-port switch
-                args={".proplist": "default-name,name,poe-out,sfp-shutdown-temperature"},
+                args={
+                    ".proplist": "default-name,name,poe-out,sfp-shutdown-temperature"
+                },
             ),
             key="default-name",
             key_secondary="name",
@@ -1971,10 +1972,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         published = self._published.get((path, key))
         if published is not None:
             old_value, old_number, since = published
-            if (
-                abs(number - old_number) < delta
-                and now - since < HYSTERESIS_MAX_AGE
-            ):
+            if abs(number - old_number) < delta and now - since < HYSTERESIS_MAX_AGE:
                 self.ds[path][key] = old_value
                 return
 
@@ -2888,9 +2886,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             local_traffic_enabled,
         ) = self.api.is_accounting_and_local_traffic_enabled()
 
-        self._sync_client_traffic_hosts(
-            {"available": False, "local_accounting": False}
-        )
+        self._sync_client_traffic_hosts({"available": False, "local_accounting": False})
 
         _LOGGER.debug(
             f"Working with {len(self.ds['client_traffic'])} accounting devices"

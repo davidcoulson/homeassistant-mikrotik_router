@@ -18,7 +18,9 @@ async def test_diagnostics_redact_private_values(hass) -> None:
     entry.options = {}
     entry.runtime_data.data_coordinator.data = {
         "environment": {"token": {"name": "token", "value": "s3cret"}},
-        "dns": {"nas.home": {"name": "nas.home", "address": "192.0.2.9", "comment": "Bob"}},
+        "dns": {
+            "nas.home": {"name": "nas.home", "address": "192.0.2.9", "comment": "Bob"}
+        },
         "host_hass": {"AA:BB:CC:DD:EE:01": "alice-phone"},
         "interface": {"ether1": {"name": "ether1", "comment": "Kitchen"}},
     }

@@ -25,9 +25,8 @@ jobs:
       - name: Check out code from GitHub
         uses: "actions/checkout@v7"
       - name: Black Code Format Check
-        uses: lgeiger/black-action@master
-        with:
-          args: ". --check --fast --diff"
+        # Pinned: a new Black release must not turn CI red on its own
+        run: pipx run black==26.10.1 . --check --diff
 
   tests:
     name: Python Lint
@@ -38,7 +37,7 @@ jobs:
       - name: Set up Python 3.14
         uses: actions/setup-python@v7
         with:
-          python-version: "3.14.2"
+          python-version: "3.14"
       - name: Install lint dependencies
         run: |
           python -m pip install --upgrade pip
@@ -58,7 +57,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.14.2"
+          python-version: "3.14"
       - name: Run Bandit
         run: |
           python -m pip install --upgrade pip bandit

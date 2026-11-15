@@ -99,7 +99,8 @@ def test_api_write_paths_refuse(method) -> None:
 
 
 @pytest.mark.parametrize(
-    "command", ["reboot", "check-for-updates", "set", "remove", "add", "run", "reset-counters"]
+    "command",
+    ["reboot", "check-for-updates", "set", "remove", "add", "run", "reset-counters"],
 )
 def test_api_query_refuses_commands(command) -> None:
     """query() runs only monitor/print commands on a read-only connection."""
@@ -185,7 +186,9 @@ def _coordinator(allowed):
     coordinator.config_entry = MagicMock(options={CONF_ALLOWED_CHANGES: allowed})
     coordinator.ds = {"access": ["write", "policy", "reboot"], "fw-update": {}}
     coordinator.api = _api(allowed)
-    coordinator.api.query = MagicMock(return_value=[{"status": "System is already up to date"}])
+    coordinator.api.query = MagicMock(
+        return_value=[{"status": "System is already up to date"}]
+    )
     coordinator.api.execute = MagicMock(side_effect=ApiReadOnly("execute"))
     return coordinator
 
@@ -276,9 +279,17 @@ async def _fake_update(self):
     }
     self.ds["interface"] = {"ether1": _interface("ether1")}
     self.ds["nat"] = {
-        "*1": {"uniq-id": "*1", "name": "r1", "comment": "", "enabled": True, ".id": "*1"}
+        "*1": {
+            "uniq-id": "*1",
+            "name": "r1",
+            "comment": "",
+            "enabled": True,
+            ".id": "*1",
+        }
     }
-    self.ds["script"] = {"backup": {"name": "backup", "last-started": "", "run-count": 0}}
+    self.ds["script"] = {
+        "backup": {"name": "backup", "last-started": "", "run-count": 0}
+    }
     return self.ds
 
 
@@ -462,7 +473,9 @@ async def test_options_flow_sets_allowed_changes(hass: HomeAssistant) -> None:
         result = await hass.config_entries.options.async_configure(
             result["flow_id"], {CONF_ALLOWED_CHANGES: ALL_BUT_PORTS}
         )
-        result = await hass.config_entries.options.async_configure(result["flow_id"], {})
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], {}
+        )
         await hass.async_block_till_done()
     assert result["type"] == "create_entry"
     assert entry.options[CONF_ALLOWED_CHANGES] == ALL_BUT_PORTS
@@ -486,8 +499,12 @@ async def test_user_step_stores_allowed_changes_as_option(hass: HomeAssistant) -
         ),
         patch("custom_components.mikrotik_router.async_setup_entry", return_value=True),
     ):
-        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
-        result = await hass.config_entries.flow.async_configure(result["flow_id"], user_input)
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": "user"}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input
+        )
         await hass.async_block_till_done()
     assert result["type"] == "create_entry"
     assert CONF_ALLOWED_CHANGES not in result["data"]
@@ -561,7 +578,9 @@ def test_escaping_command_refused_even_with_every_change_allowed() -> None:
     assert not api._connection.mock_calls
 
 
-@pytest.mark.parametrize("path", ["/system/../interface", "/interface/", "//interface", "interface"])
+@pytest.mark.parametrize(
+    "path", ["/system/../interface", "/interface/", "//interface", "interface"]
+)
 def test_unlisted_paths_are_refused(path) -> None:
     """Path spellings that resolve onto a write path don't match its entry."""
     api = _api(["firmware"])
@@ -608,7 +627,9 @@ async def test_user_and_default_disabled_entities_stay_disabled(
         disabled_by=RegistryEntryDisabler.INTEGRATION,
     )
     await _setup(hass, entry)
-    assert ent_reg.async_get(by_user.entity_id).disabled_by == RegistryEntryDisabler.USER
+    assert (
+        ent_reg.async_get(by_user.entity_id).disabled_by == RegistryEntryDisabler.USER
+    )
     assert (
         ent_reg.async_get(by_default.entity_id).disabled_by
         == RegistryEntryDisabler.INTEGRATION

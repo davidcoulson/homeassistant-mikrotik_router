@@ -385,7 +385,9 @@ def _async_setup_router_device(
         if router is not None and router.sw_version != f"{version}":
             registry.async_update_device(device_id, sw_version=f"{version}")
 
-    config_entry.async_on_unload(coordinator.async_add_listener(_async_update_sw_version))
+    config_entry.async_on_unload(
+        coordinator.async_add_listener(_async_update_sw_version)
+    )
     return device_id, identifier
 
 

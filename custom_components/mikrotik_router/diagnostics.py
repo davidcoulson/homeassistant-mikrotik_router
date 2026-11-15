@@ -198,7 +198,9 @@ def _redact_private_paths(data: Any, redacted_keys: dict[str, str]) -> Any:
     data = dict(data)
     if isinstance(environment := data.get("environment"), Mapping):
         data["environment"] = {
-            name: {**record, "value": REDACTED} if isinstance(record, Mapping) else record
+            name: (
+                {**record, "value": REDACTED} if isinstance(record, Mapping) else record
+            )
             for name, record in environment.items()
         }
     if isinstance(host_hass := data.get("host_hass"), Mapping):

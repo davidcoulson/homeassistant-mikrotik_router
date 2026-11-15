@@ -384,7 +384,9 @@ class MikrotikAPI:
             return
         if WRITE_PATH_CHANGES.get(path) in self.allowed_changes:
             return
-        _LOGGER.warning("Refused RouterOS %s on %s: not an allowed change", action, self._host)
+        _LOGGER.warning(
+            "Refused RouterOS %s on %s: not an allowed change", action, self._host
+        )
         raise ApiReadOnly(action)
 
     # ---------------------------
@@ -406,7 +408,11 @@ class MikrotikAPI:
             or ".." in command.split("/")
             or "\x00" in command
         ):
-            _LOGGER.warning("Refused RouterOS command %r on %s: not a plain command", command, self._host)
+            _LOGGER.warning(
+                "Refused RouterOS command %r on %s: not a plain command",
+                command,
+                self._host,
+            )
             raise ApiReadOnly(f"{path} {command!r}")
 
     # ---------------------------
@@ -722,7 +728,9 @@ class MikrotikAPI:
     def take_client_traffic_snapshot(self, use_accounting) -> float:
         """Tako accounting snapshot and return time diff"""
         if use_accounting:
-            self._require_change_allowed("/ip/accounting", "/ip/accounting snapshot/take")
+            self._require_change_allowed(
+                "/ip/accounting", "/ip/accounting snapshot/take"
+            )
 
         if not self.connection_check():
             return 0

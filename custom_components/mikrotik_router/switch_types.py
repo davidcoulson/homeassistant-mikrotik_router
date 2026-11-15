@@ -326,7 +326,6 @@ SENSOR_TYPES: tuple[MikrotikSwitchEntityDescription, ...] = (
 )
 
 
-
 def switch_change(description: MikrotikSwitchEntityDescription) -> str:
     """Return the kind of change a switch makes on the router."""
     return WRITE_PATH_CHANGES[description.data_switch_path]

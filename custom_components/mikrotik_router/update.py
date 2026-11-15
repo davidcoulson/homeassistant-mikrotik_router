@@ -240,7 +240,9 @@ async def _fetch_minor_changelogs(
     return changelogs[::-1]
 
 
-async def fetch_changelogs(session, installed_version: str, latest_version: str) -> list:
+async def fetch_changelogs(
+    session, installed_version: str, latest_version: str
+) -> list:
     """Fetch the changelogs newer than installed_version up to latest_version.
 
     Returns them newest first. Minor series are fetched concurrently; patches
