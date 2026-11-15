@@ -418,12 +418,15 @@ class MikrotikAPI:
         command=None,
         args=None,
         ignore_trap=False,
+        where=(),
     ) -> Optional(list):
         """Retrieve data from Mikrotik API as a list.
 
         The raw librouteros path is never handed out: it can write.
+        "where" is RouterOS query words ("?running=true") for the router
+        to filter rows with; it needs a command.
         """
-        return self._query(path, command, args, True, ignore_trap)
+        return self._query(path, command, args, True, ignore_trap, where)
 
     # ---------------------------
     #   _query
@@ -435,6 +438,7 @@ class MikrotikAPI:
         args=None,
         return_list=True,
         ignore_trap=False,
+        where=(),
     ) -> Optional(list):
         """Retrieve data from Mikrotik API."""
         """Returns generator object, unless return_list passed as True"""
@@ -495,7 +499,14 @@ class MikrotikAPI:
         elif response and command:
             _LOGGER.debug("API query: %s, %s, %s", path, command, args)
             try:
-                response = list(response(command, **args))
+                if where:
+                    # librouteros keyword arguments can't carry "?" words
+                    words = [f"={key}={value}" for key, value in args.items()]
+                    response = list(
+                        self._connection.rawCmd(f"{path}/{command}", *words, *where)
+                    )
+                else:
+                    response = list(response(command, **args))
             except (TrapError, MultiTrapError) as e:
                 if ignore_trap:
                     _LOGGER.debug("Optional API query %s unavailable: %s", path, e)

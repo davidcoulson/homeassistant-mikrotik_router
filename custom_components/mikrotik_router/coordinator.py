@@ -170,6 +170,10 @@ ETHERNET_ERROR_STATS = {
     "tx-drop-current": ("tx-drop",),
 }
 
+ETHERNET_ERROR_PROPLIST = ",".join(
+    ["name", *(field for fields in ETHERNET_ERROR_STATS.values() for field in fields)]
+)
+
 _LINK_RATE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([KMGT]?)bps\s*$", re.IGNORECASE)
 _RATE_MULTIPLIER = {"": 1e-6, "K": 1e-3, "M": 1, "G": 1e3, "T": 1e6}
 _ROUTEROS_TIME_FORMATS = ("%Y-%m-%d %H:%M:%S", "%b/%d/%Y %H:%M:%S")
@@ -569,6 +573,20 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         return self.config_entry.options.get(CONF_TRACK_HOSTS, DEFAULT_TRACK_HOSTS)
 
     # ---------------------------
+    #   _host_tables_needed
+    # ---------------------------
+    @property
+    def _host_tables_needed(self) -> bool:
+        """Whether any enabled option reads the wired host tables."""
+        return bool(
+            self.option_track_network_hosts
+            or self.option_track_iface_clients
+            or self.option_sensor_client_traffic
+            or self.option_sensor_client_captive
+            or self.option_sensor_kidcontrol
+        )
+
+    # ---------------------------
     #   option_track_network_hosts_timeout
     # ---------------------------
     @property
@@ -940,14 +958,17 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         if self.api.connected() and self.support_wireless:
             await self.hass.async_add_executor_job(self.get_wireless_hosts)
 
-        if self.api.connected():
-            await self.hass.async_add_executor_job(self.get_bridge)
+        # The bridge host, ARP and lease tables only feed host entities and
+        # interface clients; on a big switch they are the slowest reads
+        if self._host_tables_needed:
+            if self.api.connected():
+                await self.hass.async_add_executor_job(self.get_bridge)
 
-        if self.api.connected():
-            await self.hass.async_add_executor_job(self.get_arp)
+            if self.api.connected():
+                await self.hass.async_add_executor_job(self.get_arp)
 
-        if self.api.connected():
-            await self.hass.async_add_executor_job(self.get_dhcp)
+            if self.api.connected():
+                await self.hass.async_add_executor_job(self.get_dhcp)
 
         if self.api.connected():
             await self.async_process_host()
@@ -1252,7 +1273,10 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                 vals[f"{direction}-previous"] = current
 
             for _, raw, published in INTERFACE_COUNTERS:
-                vals[published] = vals.get(raw)
+                # A port that is down wasn't asked for its ethernet stats
+                # and can't have counted anything: keep what it showed
+                if vals.get(raw) is not None or vals.get("running"):
+                    vals[published] = vals.get(raw)
 
     # ---------------------------
     #   _fill_ethernet_error_stats
@@ -1261,7 +1285,8 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Fill error and drop counters /interface left out of ethernet ports.
 
         One "print stats" call, only in a traffic window where some ethernet
-        port lacks them. A router that refuses it isn't asked again.
+        port lacks them. A router that refuses it isn't asked again. Ports
+        that are down are only asked for until they have shown a value.
         """
         if not self._ethernet_stats_supported:
             return
@@ -1269,7 +1294,12 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             vals.get("name"): vals
             for vals in self.ds["interface"].values()
             if vals.get("type") == "ether"
-            and any(vals.get(raw) is None for raw in ETHERNET_ERROR_STATS)
+            and any(
+                vals.get(raw) is None
+                and (vals.get("running") or vals.get(published) is None)
+                for _, raw, published in INTERFACE_COUNTERS
+                if raw in ETHERNET_ERROR_STATS
+            )
         }
         if not missing:
             return
@@ -1277,8 +1307,14 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         source = self.api.query(
             "/interface/ethernet",
             command="print",
-            args={"stats": ""},
+            # The full stats row has about 90 fields
+            args={"stats": "", ".proplist": ETHERNET_ERROR_PROPLIST},
             ignore_trap=True,
+            where=(
+                ("?running=true",)
+                if all(vals.get("running") for vals in missing.values())
+                else ()
+            ),
         )
         if source is None:
             if self.api.connected():
@@ -1309,7 +1345,13 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         """Get ethernet port config (PoE, SFP) from Mikrotik"""
         self.ds["interface"] = parse_api(
             data=self.ds["interface"],
-            source=self.api.query("/interface/ethernet"),
+            source=self.api.query(
+                "/interface/ethernet",
+                command="print",
+                # The full row has about 90 fields and takes 1.5 s on a
+                # 61-port switch
+                args={".proplist": "default-name,name,poe-out,sfp-shutdown-temperature"},
+            ),
             key="default-name",
             key_secondary="name",
             vals=[

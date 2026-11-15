@@ -178,3 +178,23 @@ def test_validate_input_closes_api(monkeypatch, connects):
     )
     assert result == (None, "cannot_connect")
     api.close.assert_called_once()
+
+
+def test_query_where_sends_filter_words():
+    """A "where" filter goes to the router as query words after the arguments."""
+    api = MikrotikAPI("router.example", "test", "test", use_ssl=False)
+    connection = MagicMock()
+    api._connection = connection
+    api._connected = True
+    connection.rawCmd.return_value = iter([{"name": "ether1"}])
+
+    rows = api.query(
+        "/interface/ethernet",
+        command="print",
+        args={"stats": "", ".proplist": "name"},
+        where=("?running=true",),
+    )
+    assert rows == [{"name": "ether1"}]
+    connection.rawCmd.assert_called_once_with(
+        "/interface/ethernet/print", "=stats=", "=.proplist=name", "?running=true"
+    )

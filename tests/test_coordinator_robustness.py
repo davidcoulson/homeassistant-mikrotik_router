@@ -388,3 +388,13 @@ def test_interface_clients_from_arp_index() -> None:
     assert iface["ether3"]["client-ip-address"] == "192.0.2.1"
     assert iface["ether3"]["client-mac-address"] == "none"
     assert iface["ether4"]["client-ip-address"] == "none"
+
+
+def test_host_tables_only_needed_by_host_options() -> None:
+    """With tracking and client sensors off, the bridge host, ARP and lease
+    tables aren't read."""
+    coordinator = object.__new__(MikrotikCoordinator)
+    coordinator.config_entry = MagicMock(options={"track_iface_clients": False})
+    assert not coordinator._host_tables_needed
+    coordinator.config_entry.options["track_iface_clients"] = True
+    assert coordinator._host_tables_needed

@@ -22,6 +22,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.mikrotik_router.const import DOMAIN
 from custom_components.mikrotik_router.coordinator import (
+    ETHERNET_ERROR_PROPLIST,
     MikrotikCoordinator,
     _counter_delta,
     _duplex,
@@ -144,7 +145,7 @@ def test_missing_counters_stay_unknown() -> None:
 
 def _switch_chip_row(**counters):
     """A CRS3xx switch port: /interface has no error or drop counters."""
-    row = _row(**counters)
+    row = _row(running=True, **counters)
     for field in ("rx-error", "tx-error", "rx-drop", "tx-drop"):
         del row[field]
     return row
@@ -156,7 +157,7 @@ def _with_ethernet_stats(coordinator, rows, stats):
     def query(path, command=None, **kw):
         if path == "/interface":
             return rows
-        if path == "/interface/ethernet" and command == "print":
+        if path == "/interface/ethernet" and "stats" in kw.get("args", {}):
             calls.append(kw)
             return stats
         return None
@@ -192,7 +193,13 @@ def test_switch_chip_errors_from_ethernet_stats() -> None:
     assert vals["tx-errors"] == 0
     assert vals["rx-drops"] == 6
     assert vals["tx-drops"] == 7
-    assert calls == [{"args": {"stats": ""}, "ignore_trap": True}]
+    assert calls == [
+        {
+            "args": {"stats": "", ".proplist": ETHERNET_ERROR_PROPLIST},
+            "ignore_trap": True,
+            "where": ("?running=true",),
+        }
+    ]
     assert not _skip_sensor(
         coordinator.config_entry, _description("rx-errors"), coordinator.ds["interface"], "ether1"
     )
@@ -458,3 +465,26 @@ async def test_interface_sensors_created(hass: HomeAssistant) -> None:
     assert rx.attributes["formatted"] == "1 Mbit/s"
     speed = hass.states.get(entries[("sensor", "mikrotik-link-speed-sfp_sfpplus1")].entity_id)
     assert speed.state == "10000"
+
+
+def test_ethernet_stats_skip_ports_that_are_down() -> None:
+    """A down port is asked once, to have a value to show; after that the
+    router is asked for running ports only and the down port keeps its
+    counters."""
+    down = {**_switch_chip_row(), "running": False}
+    up = {**_switch_chip_row(), "default-name": "ether2", "name": "ether2", ".id": "*2", "running": True}
+    rows = [down, up]
+    coordinator = _coordinator(rows)
+    stats = [
+        {"name": "ether1", "rx-fcs-error": 2, "tx-underrun": 0, "rx-drop": 0, "tx-drop": 0},
+        {"name": "ether2", "rx-fcs-error": 1},
+    ]
+    calls = _with_ethernet_stats(coordinator, rows, stats)
+
+    assert _poll(coordinator, 0.0)["rx-errors"] == 2
+    assert calls[0]["where"] == ()
+
+    stats[:] = [{"name": "ether2", "rx-fcs-error": 5}]
+    assert _poll(coordinator, 60.0)["rx-errors"] == 2
+    assert calls[1]["where"] == ("?running=true",)
+    assert coordinator.ds["interface"]["ether2"]["rx-errors"] == 5
