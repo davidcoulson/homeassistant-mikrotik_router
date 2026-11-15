@@ -32,6 +32,10 @@ async def async_setup_entry(
     add_entities_callback: AddEntitiesCallback,
 ) -> None:
     """Set up entry for component"""
+    if not config_entry.options.get(CONF_TRACK_HOSTS, DEFAULT_TRACK_HOSTS):
+        # No tracker entities: without a listener the 10 s tracker
+        # coordinator doesn't run
+        return
     dispatcher = {
         "MikrotikDeviceTracker": MikrotikDeviceTracker,
         "MikrotikHostDeviceTracker": MikrotikHostDeviceTracker,

@@ -901,10 +901,10 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
             if self.api.connected():
                 await self.hass.async_add_executor_job(self.get_system_routerboard)
 
-            if self.api.connected():
+            if self.api.connected() and self._host_tables_needed:
                 await self.hass.async_add_executor_job(self.get_dhcp_network)
 
-            if self.api.connected():
+            if self.api.connected() and self._host_tables_needed:
                 await self.hass.async_add_executor_job(self.get_dns)
 
             if not self.api.connected():
@@ -935,7 +935,7 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         if self.api.connected() and self.option_sensor_scripts:
             await self.hass.async_add_executor_job(self.get_script)
 
-        if self.api.connected() and self._slow_poll:
+        if self.api.connected() and self._slow_poll and self._host_tables_needed:
             await self.hass.async_add_executor_job(self.get_dhcp_client)
             await self.hass.async_add_executor_job(self.get_dhcp_server)
 
@@ -955,7 +955,9 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
         if self.api.connected() and self.support_wireless and self._slow_poll:
             await self.hass.async_add_executor_job(self.get_wireless)
 
-        if self.api.connected() and self.support_wireless:
+        # No wireless interface (a switch): the registration tables can only
+        # be empty or refused. get_wireless found the interfaces in the slow tier
+        if self.api.connected() and self.support_wireless and self.ds["wireless"]:
             await self.hass.async_add_executor_job(self.get_wireless_hosts)
 
         # The bridge host, ARP and lease tables only feed host entities and

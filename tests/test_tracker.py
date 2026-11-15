@@ -185,3 +185,14 @@ def test_untracked_host_is_unavailable() -> None:
         assert tracker.available is False
         tracker._data = {"presence-tracked": True}
         assert tracker.available is True
+
+
+async def test_no_tracker_platform_listener_without_host_tracking() -> None:
+    """With host tracking off the platform adds nothing, so the tracker
+    coordinator gets no listener and stops polling."""
+    from custom_components.mikrotik_router import device_tracker
+
+    entry = MagicMock(options={"track_network_hosts": False})
+    with patch.object(device_tracker, "async_add_entities") as add:
+        await device_tracker.async_setup_entry(MagicMock(), entry, MagicMock())
+    add.assert_not_called()
