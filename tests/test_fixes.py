@@ -18,9 +18,14 @@ def _nat(source, data):
 
 
 def test_prune_removes_deleted_and_filtered_rows():
-    data = _nat([{".id": "*1", "action": "dst-nat"}, {".id": "*2", "action": "dst-nat"}], {})
+    data = _nat(
+        [{".id": "*1", "action": "dst-nat"}, {".id": "*2", "action": "dst-nat"}], {}
+    )
     assert set(data) == {"*1", "*2"}
-    data = _nat([{".id": "*1", "action": "dst-nat"}, {".id": "*2", "action": "masquerade"}], data)
+    data = _nat(
+        [{".id": "*1", "action": "dst-nat"}, {".id": "*2", "action": "masquerade"}],
+        data,
+    )
     assert set(data) == {"*1"}
     assert _nat([], data) == {}
 
@@ -59,9 +64,18 @@ class _Session:
 
 
 async def test_fetch_changelogs_only_requests_existing_releases():
-    session = _Session({"7.19.4", "7.19.5", "7.20", "7.20.1", "7.20.2", "7.21", "7.21.1"})
+    session = _Session(
+        {"7.19.4", "7.19.5", "7.20", "7.20.1", "7.20.2", "7.21", "7.21.1"}
+    )
     changelogs = await fetch_changelogs(session, "7.19.4", "7.21.1 (stable)")
-    assert changelogs == ["- 7.21.1", "- 7.21", "- 7.20.2", "- 7.20.1", "- 7.20", "- 7.19.5"]
+    assert changelogs == [
+        "- 7.21.1",
+        "- 7.21",
+        "- 7.20.2",
+        "- 7.20.1",
+        "- 7.20",
+        "- 7.19.5",
+    ]
     assert len(session.requested) < 15
 
 

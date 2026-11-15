@@ -47,7 +47,9 @@ def test_monitor_without_module_reports_none_temperature() -> None:
     assert coordinator.ds["interface"]["sfp1"]["sfp-temperature"] is None
 
     sensor = object.__new__(MikrotikDiagnosticSensor)
-    sensor.entity_description = next(d for d in SENSOR_TYPES if d.key == "sfp_temperature")
+    sensor.entity_description = next(
+        d for d in SENSOR_TYPES if d.key == "sfp_temperature"
+    )
     sensor._data = coordinator.ds["interface"]["sfp1"]
     assert sensor.native_value is None
 
@@ -105,7 +107,11 @@ def test_rate_after_missed_sample_uses_the_devices_own_baseline(monkeypatch) -> 
 
 def test_device_absent_from_one_reply_keeps_its_baseline(monkeypatch) -> None:
     coordinator, clock = _kid_control(monkeypatch)
-    coordinator.ds["host"]["B"] = {"address": "10.0.0.2", "mac-address": "B", "host-name": "b"}
+    coordinator.ds["host"]["B"] = {
+        "address": "10.0.0.2",
+        "mac-address": "B",
+        "host-name": "b",
+    }
     _reply(coordinator, [("A", 1000, 0), ("B", 0, 0)])
     clock[0] += 60
     _reply(coordinator, [("B", 6000, 0)])  # A is missing
@@ -120,7 +126,11 @@ def test_new_client_does_not_spike_with_its_lifetime_counter(monkeypatch) -> Non
     coordinator, clock = _kid_control(monkeypatch)
     _reply(coordinator, [("A", 10, 10)])
     clock[0] += 60
-    coordinator.ds["host"]["B"] = {"address": "10.0.0.2", "mac-address": "B", "host-name": "b"}
+    coordinator.ds["host"]["B"] = {
+        "address": "10.0.0.2",
+        "mac-address": "B",
+        "host-name": "b",
+    }
     _reply(coordinator, [("A", 70, 70), ("B", 50_000_000_000, 50_000_000_000)])
     assert coordinator.ds["client_traffic"]["A"]["tx"] == 1
     assert coordinator.ds["client_traffic"]["B"]["tx"] is None
@@ -154,15 +164,17 @@ def test_router_time_zone_from_clock() -> None:
         _router_time_zone,
     )
 
-    tz = _router_time_zone({"time-zone-name": "America/New_York", "gmt-offset": "-05:00"})
+    tz = _router_time_zone(
+        {"time-zone-name": "America/New_York", "gmt-offset": "-05:00"}
+    )
     parsed = _parse_routeros_time("2024-01-05 10:00:00", tz)
     assert parsed.utcoffset() == timedelta(hours=-5)
     # Not an IANA name: fall back to the offset
     tz = _router_time_zone({"time-zone-name": "manual", "gmt-offset": "+02:30"})
     assert tz == timezone(timedelta(hours=2, minutes=30))
-    assert _router_time_zone({"time-zone-name": "manual", "gmt-offset": -3600}) == timezone(
-        timedelta(hours=-1)
-    )
+    assert _router_time_zone(
+        {"time-zone-name": "manual", "gmt-offset": -3600}
+    ) == timezone(timedelta(hours=-1))
     assert _router_time_zone({"time-zone-name": "manual"}) is None
     assert _router_time_zone(None) is None
     assert _parse_routeros_time("2024-01-05 10:00:00", None) is None
@@ -198,7 +210,11 @@ def test_monitor_batch_is_retried_after_a_refusal() -> None:
 
     def query(path, **kw):
         calls.append(kw["args"])
-        return None if "numbers" in kw["args"] else [{"name": "ether1", "status": "link-ok"}]
+        return (
+            None
+            if "numbers" in kw["args"]
+            else [{"name": "ether1", "status": "link-ok"}]
+        )
 
     coordinator.api.query.side_effect = query
     coordinator._monitor_ethernet(["*1", "*2"], ETHERNET_MONITOR_VALS)

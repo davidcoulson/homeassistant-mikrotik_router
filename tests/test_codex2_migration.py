@@ -53,7 +53,9 @@ def _entry(options, data_extra=None, minor=3):
         ({"read_only": False, CONF_ALLOWED_CHANGES: []}, []),
     ],
 )
-async def test_read_only_option_migrates(hass: HomeAssistant, options, expected) -> None:
+async def test_read_only_option_migrates(
+    hass: HomeAssistant, options, expected
+) -> None:
     entry = _entry(options)
     entry.add_to_hass(hass)
     assert await async_migrate_entry(hass, entry)

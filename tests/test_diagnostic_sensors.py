@@ -15,9 +15,7 @@ from custom_components.mikrotik_router.sensor_types import (
     SENSOR_TYPES,
 )
 
-DIAGNOSTIC = {
-    d.key: d for d in SENSOR_TYPES if d.func == "MikrotikDiagnosticSensor"
-}
+DIAGNOSTIC = {d.key: d for d in SENSOR_TYPES if d.func == "MikrotikDiagnosticSensor"}
 
 
 def test_descriptions_are_disabled_diagnostics() -> None:

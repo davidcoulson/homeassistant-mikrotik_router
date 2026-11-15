@@ -75,9 +75,7 @@ async def test_insecure_entries_get_a_repair_issue(
         await hass.async_block_till_done()
 
     issues = {
-        issue_id
-        for (domain, issue_id) in ir.async_get(hass).issues
-        if domain == DOMAIN
+        issue_id for (domain, issue_id) in ir.async_get(hass).issues if domain == DOMAIN
     }
     expected = {f"{issue}_{entry.entry_id}"} if issue else set()
     assert issues == expected

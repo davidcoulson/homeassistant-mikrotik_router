@@ -58,9 +58,7 @@ def test_wireless_unknown_master_and_two_modules() -> None:
     coordinator = _coordinator(
         {
             "/interface/wifi": [{"name": "wifi1", "ssid": "a"}],
-            "/interface/wireless": [
-                {"name": "wlan2", "master-interface": "missing"}
-            ],
+            "/interface/wireless": [{"name": "wlan2", "master-interface": "missing"}],
         }
     )
     coordinator._wifimodules = ["wifi", "wireless"]
@@ -80,16 +78,22 @@ def test_accounting_follows_address_changes() -> None:
     coordinator = _coordinator(
         {
             "/ip/accounting/snapshot": [
-                {".id": "*1", "src-address": "10.0.0.2", "dst-address": "8.8.8.8",
-                 "bytes": 1000},
-                {".id": "*2", "src-address": "bogus", "dst-address": "10.0.0.2",
-                 "bytes": 5},
+                {
+                    ".id": "*1",
+                    "src-address": "10.0.0.2",
+                    "dst-address": "8.8.8.8",
+                    "bytes": 1000,
+                },
+                {
+                    ".id": "*2",
+                    "src-address": "bogus",
+                    "dst-address": "10.0.0.2",
+                    "bytes": 5,
+                },
             ]
         }
     )
-    coordinator.ds["dhcp-network"] = {
-        "n": {"IPv4Network": IPv4Network("10.0.0.0/24")}
-    }
+    coordinator.ds["dhcp-network"] = {"n": {"IPv4Network": IPv4Network("10.0.0.0/24")}}
     coordinator.api.is_accounting_and_local_traffic_enabled.return_value = (
         True,
         False,
@@ -160,7 +164,9 @@ def test_temperature_hysteresis_is_finer_than_cpu_load(monkeypatch) -> None:
     coordinator.api.connected.return_value = True
     coordinator.major_fw_version = 7
     coordinator.api.query.side_effect = lambda path, **kw: (
-        [{"name": "cpu-temperature", "value": "46"}] if path == "/system/health" else None
+        [{"name": "cpu-temperature", "value": "46"}]
+        if path == "/system/health"
+        else None
     )
     coordinator.ds["health7"] = {}
     coordinator.ds["access"] = ["write", "policy", "reboot", "read"]
@@ -200,8 +206,12 @@ def _monitor_coordinator(batch_ok):
         calls.append(args)
         if path == "/interface":
             return [
-                {"default-name": f"ether{i}", "name": f"ether{i}", ".id": f"*{i}",
-                 "type": "ether"}
+                {
+                    "default-name": f"ether{i}",
+                    "name": f"ether{i}",
+                    ".id": f"*{i}",
+                    "type": "ether",
+                }
                 for i in (1, 2, 3)
             ]
         if path == "/interface/ethernet" and command == "monitor":
@@ -269,15 +279,19 @@ async def test_tiered_polling(monkeypatch) -> None:
     coordinator._last_firmware_check = None
     coordinator.host_hass_recovered = True
     coordinator.data = None
-    for attr in ("support_capsman", "support_wireless", "support_ppp",
-                 "support_hotspot", "support_ups", "support_gps"):
+    for attr in (
+        "support_capsman",
+        "support_wireless",
+        "support_ppp",
+        "support_hotspot",
+        "support_ups",
+        "support_gps",
+    ):
         setattr(coordinator, attr, False)
     calls = []
     for name in dir(module.MikrotikCoordinator):
         if name.startswith(("get_", "process_")):
-            monkeypatch.setattr(
-                coordinator, name, lambda name=name: calls.append(name)
-            )
+            monkeypatch.setattr(coordinator, name, lambda name=name: calls.append(name))
 
     async def process_host():
         calls.append("process_host")
@@ -344,12 +358,21 @@ async def test_process_host_is_serialised() -> None:
 def test_arp_table_is_swapped_not_resized() -> None:
     """Item 3: readers holding the old table never see it change size."""
     coordinator = _coordinator(
-        {"/ip/arp": [{"mac-address": "BB", "address": "10.0.0.3",
-                      "interface": "ether2"}]}
+        {
+            "/ip/arp": [
+                {"mac-address": "BB", "address": "10.0.0.3", "interface": "ether2"}
+            ]
+        }
     )
     coordinator.ds.update({"bridge": {}, "bridge_host": {}, "dhcp-client": {}})
-    old = {"AA": {"mac-address": "AA", "address": "10.0.0.2",
-                  "interface": "ether1", "bridge": ""}}
+    old = {
+        "AA": {
+            "mac-address": "AA",
+            "address": "10.0.0.2",
+            "interface": "ether1",
+            "bridge": "",
+        }
+    }
     coordinator.ds["arp"] = old
     coordinator.get_arp()
     assert set(old) == {"AA"}
@@ -369,12 +392,9 @@ def test_interface_clients_from_arp_index() -> None:
                 "ether4": {"name": "ether4"},
             },
             "arp": {
-                "A": {"interface": "ether1", "address": "10.0.0.2",
-                      "mac-address": "A"},
-                "B": {"interface": "bond1", "address": "10.0.0.3",
-                      "mac-address": "B"},
-                "C": {"interface": "bond1", "address": "10.0.0.4",
-                      "mac-address": "C"},
+                "A": {"interface": "ether1", "address": "10.0.0.2", "mac-address": "A"},
+                "B": {"interface": "bond1", "address": "10.0.0.3", "mac-address": "B"},
+                "C": {"interface": "bond1", "address": "10.0.0.4", "mac-address": "C"},
             },
             "bonding_slaves": {"ether2": {"master": "bond1"}},
             "dhcp-client": {"ether3": {"address": "192.0.2.1"}},
@@ -388,3 +408,13 @@ def test_interface_clients_from_arp_index() -> None:
     assert iface["ether3"]["client-ip-address"] == "192.0.2.1"
     assert iface["ether3"]["client-mac-address"] == "none"
     assert iface["ether4"]["client-ip-address"] == "none"
+
+
+def test_host_tables_only_needed_by_host_options() -> None:
+    """With tracking and client sensors off, the bridge host, ARP and lease
+    tables aren't read."""
+    coordinator = object.__new__(MikrotikCoordinator)
+    coordinator.config_entry = MagicMock(options={"track_iface_clients": False})
+    assert not coordinator._host_tables_needed
+    coordinator.config_entry.options["track_iface_clients"] = True
+    assert coordinator._host_tables_needed

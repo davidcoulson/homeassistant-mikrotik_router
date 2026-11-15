@@ -163,9 +163,9 @@ async def test_child_devices_and_migration(hass: HomeAssistant, caplog) -> None:
     assert children["NAT"].id == legacy_nat.id
 
     # Only the router remains a main device
-    assert [d.id for d in dr.async_entries_for_config_entry(dev_reg, entry.entry_id)] == [
-        router.id
-    ]
+    assert [
+        d.id for d in dr.async_entries_for_config_entry(dev_reg, entry.entry_id)
+    ] == [router.id]
 
     ent_reg = er.async_get(hass)
     device_ids = {
@@ -191,7 +191,10 @@ async def test_child_devices_and_migration(hass: HomeAssistant, caplog) -> None:
         assert await hass.config_entries.async_reload(entry.entry_id)
         await hass.async_block_till_done()
     assert len(dr.async_entries_for_parent_device(dev_reg, router.id)) == 3
-    assert not [r for r in caplog.records if r.levelname in ("ERROR", "WARNING")
+    assert not [
+        r
+        for r in caplog.records
+        if r.levelname in ("ERROR", "WARNING")
         and "has not been tested" not in r.getMessage()
     ]
 
@@ -343,4 +346,3 @@ def test_device_info_links_to_router(description) -> None:
         assert identifier[0] == DOMAIN
         assert identifier[1].startswith(f"{entry_id}-")
         assert device_info["name"]
-
