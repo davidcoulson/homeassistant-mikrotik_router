@@ -196,3 +196,15 @@ async def test_no_tracker_platform_listener_without_host_tracking() -> None:
     with patch.object(device_tracker, "async_add_entities") as add:
         await device_tracker.async_setup_entry(MagicMock(), entry, MagicMock())
     add.assert_not_called()
+
+
+async def test_wired_client_count_unknown_without_host_tables() -> None:
+    """With the host options off the wired tables aren't read, so the wired
+    client count is unknown, not zero."""
+    coordinator = _host_coordinator(("read",), {"m1": {"enabled": True}})
+    await coordinator._async_process_host()
+    assert coordinator.ds["resource"]["clients_wired"] == 1
+
+    coordinator.config_entry.options = {"track_iface_clients": False}
+    await coordinator._async_process_host()
+    assert coordinator.ds["resource"]["clients_wired"] is None

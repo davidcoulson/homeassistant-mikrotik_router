@@ -957,8 +957,11 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
 
         # No wireless interface (a switch): the registration tables can only
         # be empty or refused. get_wireless found the interfaces in the slow tier
-        if self.api.connected() and self.support_wireless and self.ds["wireless"]:
-            await self.hass.async_add_executor_job(self.get_wireless_hosts)
+        if self.api.connected() and self.support_wireless:
+            if self.ds["wireless"]:
+                await self.hass.async_add_executor_job(self.get_wireless_hosts)
+            else:
+                self.ds["wireless_hosts"] = {}
 
         # The bridge host, ARP and lease tables only feed host entities and
         # interface clients; on a big switch they are the slowest reads
@@ -2869,6 +2872,10 @@ class MikrotikCoordinator(DataUpdateCoordinator[None]):
                     self.ds["resource"]["clients_wireless"] += 1
                 else:
                     self.ds["resource"]["clients_wired"] += 1
+
+        if not self._host_tables_needed:
+            # The wired host tables aren't read: unknown, not zero
+            self.ds["resource"]["clients_wired"] = None
 
     # ---------------------------
     #   process_accounting
